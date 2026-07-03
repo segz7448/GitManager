@@ -77,6 +77,58 @@ async function request(path, options = {}) {
   return res;
 }
 
+async function requestPaginated(path, options = {}) {
+  const token = await getToken();
+  if (!token) throw new GitHubError('No GitHub token configured', 401, null);
+
+  const url = path.startsWith('http') ? path : `${API_BASE}${path}`;
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    Accept: 'application/vnd.github+json',
+    'X-GitHub-Api-Version': '2022-11-28',
+    ...(options.headers || {}),
+  };
+
+  const res = await fetch(url, { ...options, headers });
+  if (!res.ok) {
+    let data = null;
+    try { data = await res.json(); } catch (e) {}
+    throw new GitHubError((data && data.message) || `GitHub API error: ${res.status}`, res.status, data);
+  }
+
+  const data = await res.json();
+  const linkHeader = res.headers.get('link') || '';
+  const pagination = parseLinkHeader(linkHeader);
+  return { data, pagination };
+}
+
+function parseLinkHeader(linkHeader) {
+  const result = { hasNext: false, hasPrev: false, nextPage: null, lastPage: null };
+  if (!linkHeader) return result;
+
+  const parts = linkHeader.split(',');
+  for (const part of parts) {
+    const match = part.match(/<([^>]+)>;\s*rel="([^"]+)"/);
+    if (!match) continue;
+    const [, urlStr, rel] = match;
+    const pageMatch = urlStr.match(/[?&]page=(\d+)/);
+    const pageNum = pageMatch ? parseInt(pageMatch[1], 10) : null;
+
+    if (rel === 'next') {
+      result.hasNext = true;
+      result.nextPage = pageNum;
+    }
+    if (rel === 'prev') {
+      result.hasPrev = true;
+    }
+    if (rel === 'last') {
+      result.lastPage = pageNum;
+    }
+  }
+  return result;
+}
+
+
 async function requestRaw(path, options = {}) {
   const token = await getToken();
   if (!token) throw new GitHubError('No GitHub token configured', 401, null);
@@ -118,25 +170,57 @@ export async function verifyToken(token) {
 
 // ---------- Repos ----------
 
-export async function listRepos({ page = 1, perPage = 50, sort = 'updated' } = {}) {
-  return request(`/user/repos?per_page=${perPage}&page=${page}&sort=${sort}&affiliation=owner,collaborator`);
+export async function listRepos({ page = 1, perPage = 30, sort = 'updated' } = {}) {
+  return requestPaginated(`/user/repos?per_page=${perPage}&page=${page}&sort=${sort}&affiliation=owner,collaborator`);
 }
 
 export async function getRepo(owner, repo) {
   return request(`/repos/${owner}/${repo}`);
 }
 
-export async function createRepo({ name, description = '', isPrivate = true, autoInit = true }) {
+export async function createRepo({
+  name,
+  description = '',
+  isPrivate = false,
+  autoInit = false,
+  gitignoreTemplate,
+  licenseTemplate,
+}) {
+  // GitHub only applies gitignore/license templates when there's an
+  // initial commit to attach them to, so auto_init must be true whenever
+  // either is set - even if the caller didn't explicitly ask for a README.
+  const needsInit = autoInit || !!gitignoreTemplate || !!licenseTemplate;
+
+  const body = {
+    name,
+    description,
+    private: isPrivate,
+    auto_init: needsInit,
+  };
+  if (gitignoreTemplate) body.gitignore_template = gitignoreTemplate;
+  if (licenseTemplate) body.license_template = licenseTemplate;
+
   return request('/user/repos', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      name,
-      description,
-      private: isPrivate,
-      auto_init: autoInit,
-    }),
+    body: JSON.stringify(body),
   });
+}
+
+/**
+ * GitHub's list of built-in .gitignore templates (by name, e.g. "Node",
+ * "Python", "Android").
+ */
+export async function listGitignoreTemplates() {
+  return request('/gitignore/templates');
+}
+
+/**
+ * GitHub's list of common OSS licenses with their template keys
+ * (e.g. { key: "mit", name: "MIT License" }).
+ */
+export async function listLicenseTemplates() {
+  return request('/licenses');
 }
 
 export async function updateRepo(owner, repo, updates) {
@@ -286,7 +370,7 @@ export async function listBranches(owner, repo) {
 export async function listWorkflowRuns(owner, repo, { perPage = 30, page = 1, branch } = {}) {
   const q = new URLSearchParams({ per_page: String(perPage), page: String(page) });
   if (branch) q.set('branch', branch);
-  return request(`/repos/${owner}/${repo}/actions/runs?${q.toString()}`);
+  return requestPaginated(`/repos/${owner}/${repo}/actions/runs?${q.toString()}`);
 }
 
 export async function getWorkflowRun(owner, repo, runId) {
@@ -317,6 +401,69 @@ export async function triggerWorkflowDispatch(owner, repo, workflowIdOrFilename,
   });
 }
 
+// ---------- Code search ----------
+
+/**
+ * Search code across a single repo (or globally if owner/repo omitted).
+ * GitHub's search API requires at least one qualifier beyond the raw text
+ * for good results; we scope to repo: by default.
+ */
+export async function searchCode(query, { owner, repo, page = 1, perPage = 30 } = {}) {
+  let q = query;
+  if (owner && repo) {
+    q += ` repo:${owner}/${repo}`;
+  }
+  const params = new URLSearchParams({
+    q,
+    per_page: String(perPage),
+    page: String(page),
+  });
+  return request(`/search/code?${params.toString()}`, {
+    headers: { Accept: 'application/vnd.github.text-match+json' },
+  });
+}
+
+// ---------- Issues ----------
+
+/**
+ * Issues assigned to, mentioning, or authored by the authenticated user,
+ * across all repos they can see. Uses the search API since there's no
+ * single REST endpoint for "my issues" across repos.
+ */
+export async function listMyIssues({ page = 1, perPage = 30, state = 'open' } = {}) {
+  const q = `is:issue involves:@me is:${state}`;
+  const params = new URLSearchParams({
+    q,
+    per_page: String(perPage),
+    page: String(page),
+    sort: 'updated',
+  });
+  return requestPaginated(`/search/issues?${params.toString()}`);
+}
+
+export async function listRepoIssues(owner, repo, { page = 1, perPage = 30, state = 'open' } = {}) {
+  const params = new URLSearchParams({ state, per_page: String(perPage), page: String(page) });
+  return requestPaginated(`/repos/${owner}/${repo}/issues?${params.toString()}`);
+}
+
+export async function createIssue(owner, repo, { title, body }) {
+  return request(`/repos/${owner}/${repo}/issues`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title, body }),
+  });
+}
+
+// ---------- Activity ----------
+
+/**
+ * The authenticated user's recent public + private activity (commits,
+ * PRs, issues, stars, etc.) - the same feed shown on their GitHub profile.
+ */
+export async function listMyRecentActivity(username, { page = 1, perPage = 30 } = {}) {
+  return requestPaginated(`/users/${username}/events?per_page=${perPage}&page=${page}`);
+}
+
 /**
  * Get raw logs for a full run as a zip (GitHub returns a zip archive of all
  * job logs). Returns the raw fetch Response so caller can stream to disk.
@@ -331,6 +478,21 @@ export async function downloadRunLogsZipResponse(owner, repo, runId) {
 export async function getJobLogsText(owner, repo, jobId) {
   const res = await requestRaw(`/repos/${owner}/${repo}/actions/jobs/${jobId}/logs`, { method: 'GET' });
   return res.text();
+}
+
+// ---------- Artifacts ----------
+
+export async function listRunArtifacts(owner, repo, runId) {
+  return request(`/repos/${owner}/${repo}/actions/runs/${runId}/artifacts`);
+}
+
+/**
+ * Downloads an artifact as a zip (GitHub always wraps artifacts in a zip,
+ * even single-file ones like an APK). Returns the raw Response - caller
+ * reads the bytes and unzips with JSZip to get the actual file(s) inside.
+ */
+export async function downloadArtifactZipResponse(owner, repo, artifactId) {
+  return requestRaw(`/repos/${owner}/${repo}/actions/artifacts/${artifactId}/zip`, { method: 'GET' });
 }
 
 // ---------- Base64 helpers (UTF-8 safe, no Buffer dependency issues) ----------

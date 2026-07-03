@@ -10,7 +10,7 @@ import {
   Platform,
 } from 'react-native';
 import { CodeEditor } from '@actualwave/react-native-codeditor';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import { getFileContent, createOrUpdateFile } from '../services/github';
 import { colors, spacing, typography } from '../theme';
 

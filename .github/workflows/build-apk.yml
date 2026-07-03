@@ -31,6 +31,9 @@ jobs:
 
       - name: Prebuild native Android project
         run: npx expo prebuild --platform android --clean --no-install
+        # This runs entirely locally - it generates the android/ folder
+        # from app.json + installed config plugins. No Expo account,
+        # token, or cloud service is contacted.
 
       - name: Decode release keystore
         if: env.HAS_RELEASE_KEYSTORE == 'true'

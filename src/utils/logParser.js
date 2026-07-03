@@ -123,6 +123,16 @@ const PATTERNS = [
 
   // ---------- Java / Signing ----------
   {
+    id: 'keystore-not-found-for-signing-config',
+    regex: /Keystore file '(.+?)' not found for signing config '(.+?)'/i,
+    category: 'Signing',
+    explain: (m) => ({
+      title: `Keystore not found for '${m[2]}' signing config`,
+      cause: `Gradle expected a keystore at ${m[1]} but it doesn't exist. This usually means the "Decode release keystore" CI step was skipped (no RELEASE_KEYSTORE_BASE64 secret set) or ran before this path existed.`,
+      fix: `Either add the RELEASE_KEYSTORE_BASE64/RELEASE_STORE_PASSWORD/RELEASE_KEY_ALIAS/RELEASE_KEY_PASSWORD secrets to the repo, or confirm the signing config plugin falls back to the debug keystore when no real keystore file is present.`,
+    }),
+  },
+  {
     id: 'keystore-missing',
     regex: /(Keystore file .* not found|Failed to read key .* from store)/i,
     category: 'Signing',
@@ -158,16 +168,33 @@ const PATTERNS = [
 
 /**
  * Scan raw log text and return a list of found issues.
- * Returns: [{ id, category, line, lineNumber, title, cause, fix }]
+ * Each error is tagged with the CI step (GitHub Actions ##[group] block)
+ * it occurred in, determined from the actual ##[group]/##[endgroup]
+ * markers GitHub embeds in raw logs - not guessed from indentation.
+ * Returns: [{ id, category, line, lineNumber, step, title, cause, fix }]
  */
 export function parseLogErrors(rawLogText) {
   if (!rawLogText) return [];
   const lines = rawLogText.split('\n');
   const results = [];
   const seen = new Set();
+  let currentStep = null;
 
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
+    const rawLine = lines[i];
+    // Strip GitHub's ISO timestamp prefix so pattern regexes (and step
+    // name extraction) don't have to account for it.
+    const line = rawLine.replace(/^\d{4}-\d{2}-\d{2}T[\d:.]+Z\s*/, '');
+
+    const groupMatch = line.match(/^##\[group\](.+)$/);
+    if (groupMatch) {
+      currentStep = groupMatch[1].trim();
+      continue;
+    }
+    if (/^##\[endgroup\]/.test(line)) {
+      continue; // keep currentStep - GitHub doesn't always close cleanly
+    }
+
     for (const pattern of PATTERNS) {
       const match = line.match(pattern.regex);
       if (match) {
@@ -180,6 +207,7 @@ export function parseLogErrors(rawLogText) {
           category: pattern.category,
           line: line.trim(),
           lineNumber: i + 1,
+          step: currentStep,
           ...info,
         });
         break; // one pattern match per line is enough
@@ -188,6 +216,49 @@ export function parseLogErrors(rawLogText) {
   }
 
   return results;
+}
+
+/**
+ * Fallback for failures that don't match any known PATTERN: finds the
+ * step whose group contains the build's terminal failure line (e.g.
+ * "FAILURE: Build failed", "npm ERR!", a non-zero exit) and returns a
+ * short snippet around it. Used so the UI can still point at *something*
+ * useful even when the specific error text isn't in our pattern library.
+ */
+const TERMINAL_FAILURE_MARKERS = [
+  /FAILURE: Build failed/i,
+  /^npm ERR!/,
+  /Execution failed for task/i,
+  /##\[error\]/i,
+  /Process completed with exit code [1-9]/i,
+];
+
+export function findFailingStep(rawLogText) {
+  if (!rawLogText) return null;
+  const lines = rawLogText.split('\n');
+  let currentStep = null;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].replace(/^\d{4}-\d{2}-\d{2}T[\d:.]+Z\s*/, '');
+
+    const groupMatch = line.match(/^##\[group\](.+)$/);
+    if (groupMatch) {
+      currentStep = groupMatch[1].trim();
+      continue;
+    }
+
+    if (TERMINAL_FAILURE_MARKERS.some((re) => re.test(line))) {
+      const snippetStart = Math.max(0, i - 2);
+      const snippetEnd = Math.min(lines.length, i + 3);
+      const snippet = lines
+        .slice(snippetStart, snippetEnd)
+        .map((l) => l.replace(/^\d{4}-\d{2}-\d{2}T[\d:.]+Z\s*/, ''))
+        .join('\n');
+      return { step: currentStep, lineNumber: i + 1, snippet };
+    }
+  }
+
+  return null;
 }
 
 /**

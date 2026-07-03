@@ -9,7 +9,9 @@
     "scheme": "gitmanager",
     "plugins": [
       "@actualwave/react-native-codeditor",
-      "./plugins/withReleaseSigning.js"
+      "expo-notifications",
+      "./plugins/withReleaseSigning.js",
+      "./plugins/withTermuxIntegration.js"
     ],
     "android": {
       "package": "com.zenas.gitmanager",

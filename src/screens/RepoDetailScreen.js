@@ -10,7 +10,9 @@ import {
   Modal,
   TextInput,
 } from 'react-native';
-import { getContents, deleteFile, createOrUpdateFile, listBranches } from '../services/github';
+import * as DocumentPicker from 'expo-document-picker';
+import * as FileSystem from 'expo-file-system/legacy';
+import { getContents, deleteFile, createOrUpdateFile, listBranches, commitMultipleFiles, getRepo } from '../services/github';
 import { colors, spacing, typography } from '../theme';
 
 export default function RepoDetailScreen({ route, navigation }) {
@@ -25,6 +27,11 @@ export default function RepoDetailScreen({ route, navigation }) {
 
   const [newFileModalVisible, setNewFileModalVisible] = useState(false);
   const [newFileName, setNewFileName] = useState('');
+
+  const [newFolderModalVisible, setNewFolderModalVisible] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+
+  const [importing, setImporting] = useState(false);
 
   navigation.setOptions({
     title: path ? path.split('/').pop() : repo,
@@ -58,8 +65,11 @@ export default function RepoDetailScreen({ route, navigation }) {
     load();
   }, [load]);
 
+  const [defaultBranch, setDefaultBranch] = useState('main');
+
   useEffect(() => {
     listBranches(owner, repo).then(setBranches).catch(() => {});
+    getRepo(owner, repo).then((r) => setDefaultBranch(r.default_branch)).catch(() => {});
   }, [owner, repo]);
 
   const handleItemPress = (item) => {
@@ -109,6 +119,79 @@ export default function RepoDetailScreen({ route, navigation }) {
     }
   };
 
+  const handleCreateFolder = async () => {
+    if (!newFolderName.trim()) return;
+    // Git has no concept of an empty folder - it only tracks files. The
+    // standard workaround is to commit a placeholder file inside it.
+    const folderPath = path ? `${path}/${newFolderName.trim()}` : newFolderName.trim();
+    const placeholderPath = `${folderPath}/.gitkeep`;
+    try {
+      await createOrUpdateFile(owner, repo, placeholderPath, {
+        message: `Create ${folderPath}/`,
+        content: '',
+        branch,
+      });
+      setNewFolderModalVisible(false);
+      setNewFolderName('');
+      load();
+    } catch (e) {
+      Alert.alert('Failed to create folder', e.message);
+    }
+  };
+
+  const handleImportFiles = async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        multiple: true,
+        copyToCacheDirectory: true,
+      });
+      if (result.canceled) return;
+
+      const assets = result.assets || [];
+      if (assets.length === 0) return;
+
+      setImporting(true);
+
+      const BINARY_EXT = new Set([
+        'png', 'jpg', 'jpeg', 'gif', 'webp', 'ico', 'bmp', 'zip', 'gz', 'tar',
+        'jar', 'apk', 'aab', 'so', 'dex', 'ttf', 'otf', 'woff', 'woff2', 'pdf',
+        'mp3', 'mp4', 'wav',
+      ]);
+
+      const files = [];
+      for (const asset of assets) {
+        const ext = (asset.name.split('.').pop() || '').toLowerCase();
+        const targetPath = path ? `${path}/${asset.name}` : asset.name;
+        if (BINARY_EXT.has(ext)) {
+          const base64 = await FileSystem.readAsStringAsync(asset.uri, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+          files.push({ path: targetPath, binaryBase64: base64 });
+        } else {
+          const text = await FileSystem.readAsStringAsync(asset.uri, {
+            encoding: FileSystem.EncodingType.UTF8,
+          });
+          files.push({ path: targetPath, content: text });
+        }
+      }
+
+      await commitMultipleFiles(
+        owner,
+        repo,
+        branch || defaultBranch,
+        files,
+        `Import ${files.length} file(s)`
+      );
+
+      load();
+      Alert.alert('Imported', `${files.length} file(s) committed successfully.`);
+    } catch (e) {
+      Alert.alert('Import failed', e.message);
+    } finally {
+      setImporting(false);
+    }
+  };
+
   const renderItem = ({ item }) => (
     <TouchableOpacity
       style={styles.row}
@@ -125,25 +208,46 @@ export default function RepoDetailScreen({ route, navigation }) {
 
   return (
     <View style={styles.container}>
-      <View style={styles.actionBar}>
-        <TouchableOpacity
-          style={styles.actionButton}
-          onPress={() => navigation.navigate('ZipUpload', { owner, repo, path, branch })}
-        >
-          <Text style={styles.actionButtonText}>Upload ZIP</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={styles.actionButton}
-          onPress={() => setNewFileModalVisible(true)}
-        >
-          <Text style={styles.actionButtonText}>New File</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={styles.actionButton}
-          onPress={() => navigation.navigate('Actions', { owner, repo })}
-        >
-          <Text style={styles.actionButtonText}>Actions</Text>
-        </TouchableOpacity>
+      <View style={styles.actionBarWrap}>
+        <View style={styles.actionBar}>
+          <TouchableOpacity
+            style={styles.actionButton}
+            onPress={() => navigation.navigate('ZipUpload', { owner, repo, path, branch })}
+          >
+            <Text style={styles.actionButtonText}>Upload ZIP</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.actionButton}
+            onPress={handleImportFiles}
+            disabled={importing}
+          >
+            {importing ? (
+              <ActivityIndicator color={colors.accent} size="small" />
+            ) : (
+              <Text style={styles.actionButtonText}>Import Files</Text>
+            )}
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.actionButton}
+            onPress={() => navigation.navigate('Actions', { owner, repo })}
+          >
+            <Text style={styles.actionButtonText}>Actions</Text>
+          </TouchableOpacity>
+        </View>
+        <View style={styles.actionBar}>
+          <TouchableOpacity
+            style={styles.actionButton}
+            onPress={() => setNewFileModalVisible(true)}
+          >
+            <Text style={styles.actionButtonText}>New File</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.actionButton}
+            onPress={() => setNewFolderModalVisible(true)}
+          >
+            <Text style={styles.actionButtonText}>New Folder</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       {loading ? (
@@ -210,6 +314,33 @@ export default function RepoDetailScreen({ route, navigation }) {
           </View>
         </View>
       </Modal>
+
+      <Modal visible={newFolderModalVisible} transparent animationType="slide">
+        <View style={styles.modalOverlay}>
+          <View style={styles.newFileCard}>
+            <Text style={styles.modalTitle}>New Folder</Text>
+            <TextInput
+              style={styles.modalInput}
+              placeholder="folder-name"
+              placeholderTextColor={colors.fgSubtle}
+              value={newFolderName}
+              onChangeText={setNewFolderName}
+              autoCapitalize="none"
+            />
+            <Text style={styles.folderHint}>
+              Git doesn't track empty folders - a .gitkeep placeholder file will be added inside.
+            </Text>
+            <View style={styles.modalActions}>
+              <TouchableOpacity style={styles.modalCancelButton} onPress={() => setNewFolderModalVisible(false)}>
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.modalCreateButton} onPress={handleCreateFolder}>
+                <Text style={styles.modalCreateText}>Create</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -222,12 +353,15 @@ function formatBytes(bytes) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bgDefault },
-  actionBar: {
-    flexDirection: 'row',
-    padding: spacing.sm,
-    gap: spacing.sm,
+  actionBarWrap: {
     borderBottomColor: colors.border,
     borderBottomWidth: 1,
+    padding: spacing.sm,
+    gap: spacing.sm,
+  },
+  actionBar: {
+    flexDirection: 'row',
+    gap: spacing.sm,
   },
   actionButton: {
     flex: 1,
@@ -282,6 +416,7 @@ const styles = StyleSheet.create({
     color: colors.fgDefault,
     padding: spacing.md,
   },
+  folderHint: { color: colors.fgSubtle, fontSize: typography.sizeSm, marginTop: spacing.sm, lineHeight: 16 },
   modalActions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md },
   modalCancelButton: { flex: 1, padding: spacing.md, alignItems: 'center', borderRadius: 8, borderColor: colors.border, borderWidth: 1 },
   modalCancelText: { color: colors.fgMuted },

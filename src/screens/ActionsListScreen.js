@@ -16,15 +16,27 @@ export default function ActionsListScreen({ route, navigation }) {
   const [runs, setRuns] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState(null);
+  const [page, setPage] = useState(1);
+  const [hasNextPage, setHasNextPage] = useState(false);
 
-  navigation.setOptions({ title: `Actions · ${repo}` });
+  navigation.setOptions({
+    title: `Actions · ${repo}`,
+    headerRight: () => (
+      <TouchableOpacity onPress={() => navigation.navigate('WorkflowDispatch', { owner, repo })} style={{ marginRight: spacing.sm }}>
+        <Text style={{ color: colors.accent, fontWeight: '600' }}>Run ▶</Text>
+      </TouchableOpacity>
+    ),
+  });
 
   const load = useCallback(async () => {
     setError(null);
     try {
-      const data = await listWorkflowRuns(owner, repo, { perPage: 50 });
+      const { data, pagination } = await listWorkflowRuns(owner, repo, { page: 1, perPage: 30 });
       setRuns(data.workflow_runs || []);
+      setPage(1);
+      setHasNextPage(pagination.hasNext);
     } catch (e) {
       setError(e.message || 'Failed to load workflow runs');
     } finally {
@@ -32,6 +44,22 @@ export default function ActionsListScreen({ route, navigation }) {
       setRefreshing(false);
     }
   }, [owner, repo]);
+
+  const loadMore = useCallback(async () => {
+    if (!hasNextPage || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const nextPage = page + 1;
+      const { data, pagination } = await listWorkflowRuns(owner, repo, { page: nextPage, perPage: 30 });
+      setRuns((prev) => [...prev, ...(data.workflow_runs || [])]);
+      setPage(nextPage);
+      setHasNextPage(pagination.hasNext);
+    } catch (e) {
+      // silent - pull to refresh recovers
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [owner, repo, hasNextPage, loadingMore, page]);
 
   useEffect(() => {
     load();
@@ -86,6 +114,11 @@ export default function ActionsListScreen({ route, navigation }) {
           renderItem={renderRun}
           contentContainerStyle={{ padding: spacing.md }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />}
+          onEndReached={loadMore}
+          onEndReachedThreshold={0.4}
+          ListFooterComponent={
+            loadingMore ? <ActivityIndicator style={{ marginVertical: spacing.md }} color={colors.accent} /> : null
+          }
           ListEmptyComponent={<Text style={styles.emptyText}>No workflow runs yet.</Text>}
         />
       )}

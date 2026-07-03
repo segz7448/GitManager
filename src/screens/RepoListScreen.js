@@ -10,8 +10,9 @@ import {
   RefreshControl,
   Alert,
   Modal,
+  ScrollView,
 } from 'react-native';
-import { listRepos, createRepo } from '../services/github';
+import { listRepos, createRepo, listGitignoreTemplates, listLicenseTemplates } from '../services/github';
 import { useAuth } from '../context/AuthContext';
 import { colors, spacing, typography } from '../theme';
 
@@ -22,20 +23,31 @@ export default function RepoListScreen({ navigation }) {
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState(null);
+  const [page, setPage] = useState(1);
+  const [hasNextPage, setHasNextPage] = useState(false);
 
   const [createModalVisible, setCreateModalVisible] = useState(false);
   const [newRepoName, setNewRepoName] = useState('');
   const [newRepoDesc, setNewRepoDesc] = useState('');
-  const [newRepoPrivate, setNewRepoPrivate] = useState(true);
+  const [newRepoPrivate, setNewRepoPrivate] = useState(false);
+  const [newRepoReadme, setNewRepoReadme] = useState(false);
+  const [gitignoreTemplate, setGitignoreTemplate] = useState(null);
+  const [licenseTemplate, setLicenseTemplate] = useState(null);
+  const [gitignoreOptions, setGitignoreOptions] = useState([]);
+  const [licenseOptions, setLicenseOptions] = useState([]);
+  const [pickerModal, setPickerModal] = useState(null); // 'gitignore' | 'license' | null
   const [creating, setCreating] = useState(false);
 
   const load = useCallback(async () => {
     setError(null);
     try {
-      const data = await listRepos({ perPage: 100 });
+      const { data, pagination } = await listRepos({ page: 1, perPage: 30 });
       setRepos(data);
       setFiltered(data);
+      setPage(1);
+      setHasNextPage(pagination.hasNext);
     } catch (e) {
       setError(e.message || 'Failed to load repos');
     } finally {
@@ -43,6 +55,22 @@ export default function RepoListScreen({ navigation }) {
       setRefreshing(false);
     }
   }, []);
+
+  const loadMore = useCallback(async () => {
+    if (!hasNextPage || loadingMore || search.trim()) return;
+    setLoadingMore(true);
+    try {
+      const nextPage = page + 1;
+      const { data, pagination } = await listRepos({ page: nextPage, perPage: 30 });
+      setRepos((prev) => [...prev, ...data]);
+      setPage(nextPage);
+      setHasNextPage(pagination.hasNext);
+    } catch (e) {
+      // silent fail on load-more - user can pull to refresh
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [hasNextPage, loadingMore, page, search]);
 
   useEffect(() => {
     load();
@@ -67,6 +95,16 @@ export default function RepoListScreen({ navigation }) {
     load();
   };
 
+  const openCreateModal = () => {
+    setCreateModalVisible(true);
+    if (gitignoreOptions.length === 0) {
+      listGitignoreTemplates().then(setGitignoreOptions).catch(() => {});
+    }
+    if (licenseOptions.length === 0) {
+      listLicenseTemplates().then(setLicenseOptions).catch(() => {});
+    }
+  };
+
   const handleCreate = async () => {
     if (!newRepoName.trim()) {
       Alert.alert('Name required', 'Enter a repository name.');
@@ -78,11 +116,17 @@ export default function RepoListScreen({ navigation }) {
         name: newRepoName.trim(),
         description: newRepoDesc.trim(),
         isPrivate: newRepoPrivate,
+        autoInit: newRepoReadme,
+        gitignoreTemplate: gitignoreTemplate || undefined,
+        licenseTemplate: licenseTemplate || undefined,
       });
       setCreateModalVisible(false);
       setNewRepoName('');
       setNewRepoDesc('');
-      setNewRepoPrivate(true);
+      setNewRepoPrivate(false);
+      setNewRepoReadme(false);
+      setGitignoreTemplate(null);
+      setLicenseTemplate(null);
       load();
     } catch (e) {
       Alert.alert('Failed to create repo', e.message);
@@ -123,7 +167,10 @@ export default function RepoListScreen({ navigation }) {
           value={search}
           onChangeText={setSearch}
         />
-        <TouchableOpacity style={styles.newButton} onPress={() => setCreateModalVisible(true)}>
+        <TouchableOpacity style={styles.newButton} onPress={() => navigation.navigate('CodeSearch')}>
+          <Text style={styles.newButtonText}>🔍 Code</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.newButton} onPress={openCreateModal}>
           <Text style={styles.newButtonText}>+ New</Text>
         </TouchableOpacity>
       </View>
@@ -144,6 +191,11 @@ export default function RepoListScreen({ navigation }) {
           renderItem={renderRepo}
           contentContainerStyle={{ padding: spacing.md }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />}
+          onEndReached={loadMore}
+          onEndReachedThreshold={0.4}
+          ListFooterComponent={
+            loadingMore ? <ActivityIndicator style={{ marginVertical: spacing.md }} color={colors.accent} /> : null
+          }
           ListEmptyComponent={
             <Text style={styles.emptyText}>No repositories found.</Text>
           }
@@ -153,49 +205,138 @@ export default function RepoListScreen({ navigation }) {
       <Modal visible={createModalVisible} animationType="slide" transparent>
         <View style={styles.modalOverlay}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>New Repository</Text>
-            <TextInput
-              style={styles.modalInput}
-              placeholder="repo-name"
-              placeholderTextColor={colors.fgSubtle}
-              value={newRepoName}
-              onChangeText={setNewRepoName}
-              autoCapitalize="none"
-            />
-            <TextInput
-              style={styles.modalInput}
-              placeholder="Description (optional)"
-              placeholderTextColor={colors.fgSubtle}
-              value={newRepoDesc}
-              onChangeText={setNewRepoDesc}
-            />
-            <TouchableOpacity
-              style={styles.toggleRow}
-              onPress={() => setNewRepoPrivate(!newRepoPrivate)}
-            >
-              <View style={[styles.checkbox, newRepoPrivate && styles.checkboxChecked]} />
-              <Text style={styles.toggleLabel}>Private repository</Text>
-            </TouchableOpacity>
+            <ScrollView showsVerticalScrollIndicator={false}>
+              <Text style={styles.modalTitle}>New Repository</Text>
+              <TextInput
+                style={styles.modalInput}
+                placeholder="repo-name"
+                placeholderTextColor={colors.fgSubtle}
+                value={newRepoName}
+                onChangeText={setNewRepoName}
+                autoCapitalize="none"
+              />
+              <TextInput
+                style={styles.modalInput}
+                placeholder="Description (optional)"
+                placeholderTextColor={colors.fgSubtle}
+                value={newRepoDesc}
+                onChangeText={setNewRepoDesc}
+              />
 
-            <View style={styles.modalActions}>
               <TouchableOpacity
-                style={styles.modalCancelButton}
-                onPress={() => setCreateModalVisible(false)}
+                style={styles.toggleRow}
+                onPress={() => setNewRepoPrivate(!newRepoPrivate)}
               >
-                <Text style={styles.modalCancelText}>Cancel</Text>
+                <View style={[styles.checkbox, newRepoPrivate && styles.checkboxChecked]} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.toggleLabel}>Private repository</Text>
+                  <Text style={styles.toggleSubtext}>
+                    {newRepoPrivate ? 'Only you choose who can see this.' : 'Anyone on the internet can see this repository.'}
+                  </Text>
+                </View>
               </TouchableOpacity>
+
               <TouchableOpacity
-                style={styles.modalCreateButton}
-                onPress={handleCreate}
-                disabled={creating}
+                style={styles.toggleRow}
+                onPress={() => setNewRepoReadme(!newRepoReadme)}
               >
-                {creating ? (
-                  <ActivityIndicator color="#fff" />
-                ) : (
-                  <Text style={styles.modalCreateText}>Create</Text>
-                )}
+                <View style={[styles.checkbox, newRepoReadme && styles.checkboxChecked]} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.toggleLabel}>Add a README</Text>
+                  <Text style={styles.toggleSubtext}>Can be used for longer descriptions.</Text>
+                </View>
               </TouchableOpacity>
-            </View>
+
+              <TouchableOpacity style={styles.pickerRow} onPress={() => setPickerModal('gitignore')}>
+                <Text style={styles.toggleLabel}>Add .gitignore</Text>
+                <Text style={styles.pickerValue}>{gitignoreTemplate || 'None'} ›</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity style={styles.pickerRow} onPress={() => setPickerModal('license')}>
+                <Text style={styles.toggleLabel}>Add a license</Text>
+                <Text style={styles.pickerValue}>
+                  {licenseTemplate
+                    ? licenseOptions.find((l) => l.key === licenseTemplate)?.name || licenseTemplate
+                    : 'None'} ›
+                </Text>
+              </TouchableOpacity>
+
+              <View style={styles.modalActions}>
+                <TouchableOpacity
+                  style={styles.modalCancelButton}
+                  onPress={() => setCreateModalVisible(false)}
+                >
+                  <Text style={styles.modalCancelText}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.modalCreateButton}
+                  onPress={handleCreate}
+                  disabled={creating}
+                >
+                  {creating ? (
+                    <ActivityIndicator color="#fff" />
+                  ) : (
+                    <Text style={styles.modalCreateText}>Create</Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={pickerModal === 'gitignore'} animationType="slide" transparent>
+        <View style={styles.modalOverlay}>
+          <View style={styles.pickerCard}>
+            <Text style={styles.modalTitle}>.gitignore template</Text>
+            <ScrollView style={{ maxHeight: 400 }}>
+              <TouchableOpacity
+                style={styles.pickerOption}
+                onPress={() => { setGitignoreTemplate(null); setPickerModal(null); }}
+              >
+                <Text style={styles.pickerOptionText}>None</Text>
+              </TouchableOpacity>
+              {gitignoreOptions.map((name) => (
+                <TouchableOpacity
+                  key={name}
+                  style={styles.pickerOption}
+                  onPress={() => { setGitignoreTemplate(name); setPickerModal(null); }}
+                >
+                  <Text style={styles.pickerOptionText}>{name}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+            <TouchableOpacity style={styles.modalCancelButton} onPress={() => setPickerModal(null)}>
+              <Text style={styles.modalCancelText}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={pickerModal === 'license'} animationType="slide" transparent>
+        <View style={styles.modalOverlay}>
+          <View style={styles.pickerCard}>
+            <Text style={styles.modalTitle}>License</Text>
+            <ScrollView style={{ maxHeight: 400 }}>
+              <TouchableOpacity
+                style={styles.pickerOption}
+                onPress={() => { setLicenseTemplate(null); setPickerModal(null); }}
+              >
+                <Text style={styles.pickerOptionText}>None</Text>
+              </TouchableOpacity>
+              {licenseOptions.map((license) => (
+                <TouchableOpacity
+                  key={license.key}
+                  style={styles.pickerOption}
+                  onPress={() => { setLicenseTemplate(license.key); setPickerModal(null); }}
+                >
+                  <Text style={styles.pickerOptionText}>{license.name}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+            <TouchableOpacity style={styles.modalCancelButton} onPress={() => setPickerModal(null)}>
+              <Text style={styles.modalCancelText}>Close</Text>
+            </TouchableOpacity>
           </View>
         </View>
       </Modal>
@@ -270,6 +411,7 @@ const styles = StyleSheet.create({
     padding: spacing.lg,
     borderColor: colors.border,
     borderWidth: 1,
+    maxHeight: '85%',
   },
   modalTitle: { color: colors.fgDefault, fontSize: typography.sizeLg, fontWeight: '700', marginBottom: spacing.md },
   modalInput: {
@@ -288,6 +430,18 @@ const styles = StyleSheet.create({
   },
   checkboxChecked: { backgroundColor: colors.accentEmphasis, borderColor: colors.accentEmphasis },
   toggleLabel: { color: colors.fgDefault },
+  toggleSubtext: { color: colors.fgSubtle, fontSize: typography.sizeSm, marginTop: 2 },
+  pickerRow: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    paddingVertical: spacing.md, borderTopColor: colors.borderMuted, borderTopWidth: 1,
+  },
+  pickerValue: { color: colors.accent, fontSize: typography.sizeSm },
+  pickerCard: {
+    backgroundColor: colors.bgSubtle, borderTopLeftRadius: 16, borderTopRightRadius: 16,
+    padding: spacing.lg, borderColor: colors.border, borderWidth: 1, maxHeight: '70%',
+  },
+  pickerOption: { paddingVertical: spacing.md, borderBottomColor: colors.borderMuted, borderBottomWidth: 1 },
+  pickerOptionText: { color: colors.fgDefault },
   modalActions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md },
   modalCancelButton: { flex: 1, padding: spacing.md, alignItems: 'center', borderRadius: 8, borderColor: colors.border, borderWidth: 1 },
   modalCancelText: { color: colors.fgMuted },
