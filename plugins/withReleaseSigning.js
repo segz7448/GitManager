@@ -13,7 +13,7 @@ function withReleaseSigning(config) {
 
     const signingConfigBlock = `
     release {
-        if (System.getenv("RELEASE_STORE_FILE")) {
+        if (System.getenv("RELEASE_STORE_FILE") && file(System.getenv("RELEASE_STORE_FILE")).exists()) {
             storeFile file(System.getenv("RELEASE_STORE_FILE"))
             storePassword System.getenv("RELEASE_STORE_PASSWORD")
             keyAlias System.getenv("RELEASE_KEY_ALIAS")
