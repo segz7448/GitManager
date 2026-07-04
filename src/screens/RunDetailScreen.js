@@ -222,22 +222,34 @@ export default function RunDetailScreen({ route, navigation }) {
 
   const handleDownloadArtifact = async (artifact) => {
     setInstallingId(artifact.id);
-    setInstallProgress('Downloading...');
+    setInstallProgress('Downloading 0%');
     try {
       const token = await getToken();
       const zipUri = FileSystem.cacheDirectory + `artifact-${artifact.id}.zip`;
 
-      const downloadResult = await FileSystem.downloadAsync(
+      const downloadResumable = FileSystem.createDownloadResumable(
         `${API_BASE}/repos/${owner}/${repo}/actions/artifacts/${artifact.id}/zip`,
         zipUri,
-        { headers: { Authorization: `Bearer ${token}` } }
+        { headers: { Authorization: `Bearer ${token}` } },
+        (progress) => {
+          if (progress.totalBytesExpectedToWrite > 0) {
+            const pct = Math.round(
+              (progress.totalBytesWritten / progress.totalBytesExpectedToWrite) * 100
+            );
+            setInstallProgress(`Downloading ${pct}%`);
+          } else {
+            // Server didn't send Content-Length - show bytes instead of a percentage
+            setInstallProgress(`Downloading ${(progress.totalBytesWritten / 1048576).toFixed(1)} MB`);
+          }
+        }
       );
 
-      if (downloadResult.status !== 200) {
-        throw new Error(`Download failed with status ${downloadResult.status}`);
+      const downloadResult = await downloadResumable.downloadAsync();
+      if (!downloadResult || downloadResult.status !== 200) {
+        throw new Error(`Download failed with status ${downloadResult?.status ?? 'unknown'}`);
       }
 
-      setInstallProgress('Extracting...');
+      setInstallProgress('Extracting 0%');
       const zipBase64 = await FileSystem.readAsStringAsync(zipUri, {
         encoding: FileSystem.EncodingType.Base64,
       });
@@ -262,9 +274,11 @@ export default function RunDetailScreen({ route, navigation }) {
         return;
       }
 
-      setInstallProgress('Preparing install...');
-      const apkBase64 = await apkEntry.async('base64');
+      const apkBase64 = await apkEntry.async('base64', (meta) => {
+        setInstallProgress(`Extracting ${Math.round(meta.percent)}%`);
+      });
       const apkUri = FileSystem.cacheDirectory + apkName;
+      setInstallProgress('Writing file...');
       await FileSystem.writeAsStringAsync(apkUri, apkBase64, {
         encoding: FileSystem.EncodingType.Base64,
       });

@@ -495,6 +495,56 @@ export async function downloadArtifactZipResponse(owner, repo, artifactId) {
   return requestRaw(`/repos/${owner}/${repo}/actions/artifacts/${artifactId}/zip`, { method: 'GET' });
 }
 
+// ---------- Actions secrets & variables ----------
+
+export async function getRepoSecretsPublicKey(owner, repo) {
+  return request(`/repos/${owner}/${repo}/actions/secrets/public-key`);
+}
+
+export async function listRepoSecrets(owner, repo) {
+  return request(`/repos/${owner}/${repo}/actions/secrets`);
+}
+
+/**
+ * encryptedValue and keyId come from encryptSecretValue() +
+ * getRepoSecretsPublicKey() - GitHub never accepts plaintext secret values.
+ */
+export async function createOrUpdateRepoSecret(owner, repo, secretName, encryptedValue, keyId) {
+  return request(`/repos/${owner}/${repo}/actions/secrets/${secretName}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ encrypted_value: encryptedValue, key_id: keyId }),
+  });
+}
+
+export async function deleteRepoSecret(owner, repo, secretName) {
+  return request(`/repos/${owner}/${repo}/actions/secrets/${secretName}`, { method: 'DELETE' });
+}
+
+export async function listRepoVariables(owner, repo) {
+  return request(`/repos/${owner}/${repo}/actions/variables`);
+}
+
+export async function createRepoVariable(owner, repo, name, value) {
+  return request(`/repos/${owner}/${repo}/actions/variables`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, value }),
+  });
+}
+
+export async function updateRepoVariable(owner, repo, name, value) {
+  return request(`/repos/${owner}/${repo}/actions/variables/${name}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, value }),
+  });
+}
+
+export async function deleteRepoVariable(owner, repo, name) {
+  return request(`/repos/${owner}/${repo}/actions/variables/${name}`, { method: 'DELETE' });
+}
+
 // ---------- Commit history ----------
 
 /**

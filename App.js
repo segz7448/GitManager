@@ -17,6 +17,7 @@ import { colors } from './src/theme';
 import LoginScreen from './src/screens/LoginScreen';
 import RepoListScreen from './src/screens/RepoListScreen';
 import RepoDetailScreen from './src/screens/RepoDetailScreen';
+import RepoSettingsScreen from './src/screens/RepoSettingsScreen';
 import FileEditorScreen from './src/screens/FileEditorScreen';
 import FileHistoryScreen from './src/screens/FileHistoryScreen';
 import StagedChangesScreen from './src/screens/StagedChangesScreen';
@@ -73,6 +74,7 @@ function ReposStack() {
         options={{ title: 'Repositories', headerLeft: () => <HamburgerButton /> }}
       />
       <ReposStackNav.Screen name="RepoDetail" component={RepoDetailScreen} options={{ title: 'Repo' }} />
+      <ReposStackNav.Screen name="RepoSettings" component={RepoSettingsScreen} options={{ title: 'Settings' }} />
       <ReposStackNav.Screen name="FileEditor" component={FileEditorScreen} options={{ title: 'Edit File' }} />
       <ReposStackNav.Screen name="FileHistory" component={FileHistoryScreen} options={{ title: 'History' }} />
       <ReposStackNav.Screen name="StagedChanges" component={StagedChangesScreen} options={{ title: 'Staged Changes' }} />

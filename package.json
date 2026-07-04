@@ -30,6 +30,10 @@
     "react-native-gesture-handler": "~3.0.2",
     "jszip": "^3.10.1",
     "diff": "^9.0.0",
+    "tweetnacl": "^1.0.3",
+    "tweetnacl-sealedbox-js": "^1.2.0",
+    "react-native-get-random-values": "^2.0.0",
+    "isomorphic-git": "^1.38.6",
     "buffer": "^6.0.3",
     "base-64": "^1.0.0"
   },

@@ -37,9 +37,19 @@ export default function RepoDetailScreen({ route, navigation }) {
   navigation.setOptions({
     title: path ? path.split('/').pop() : repo,
     headerRight: () => (
-      <TouchableOpacity onPress={() => setBranchModalVisible(true)} style={{ marginRight: spacing.sm }}>
-        <Text style={{ color: colors.accent }}>{branch || 'branch'}</Text>
-      </TouchableOpacity>
+      <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+        {!path && (
+          <TouchableOpacity
+            onPress={() => navigation.navigate('RepoSettings', { owner, repo })}
+            style={{ marginRight: spacing.md }}
+          >
+            <Text style={{ color: colors.accent, fontSize: 16 }}>⚙</Text>
+          </TouchableOpacity>
+        )}
+        <TouchableOpacity onPress={() => setBranchModalVisible(true)} style={{ marginRight: spacing.sm }}>
+          <Text style={{ color: colors.accent }}>{branch || 'branch'}</Text>
+        </TouchableOpacity>
+      </View>
     ),
   });
 
