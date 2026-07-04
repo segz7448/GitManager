@@ -495,6 +495,17 @@ export async function downloadArtifactZipResponse(owner, repo, artifactId) {
   return requestRaw(`/repos/${owner}/${repo}/actions/artifacts/${artifactId}/zip`, { method: 'GET' });
 }
 
+// ---------- Commit history ----------
+
+/**
+ * Commit history for a specific file path.
+ */
+export async function getFileCommitHistory(owner, repo, path, { branch, perPage = 30, page = 1 } = {}) {
+  const params = new URLSearchParams({ path, per_page: String(perPage), page: String(page) });
+  if (branch) params.set('sha', branch);
+  return request(`/repos/${owner}/${repo}/commits?${params.toString()}`);
+}
+
 // ---------- Base64 helpers (UTF-8 safe, no Buffer dependency issues) ----------
 
 function encodeBase64Utf8(str) {

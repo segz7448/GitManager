@@ -13,6 +13,7 @@ import {
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import { getContents, deleteFile, createOrUpdateFile, listBranches, commitMultipleFiles, getRepo } from '../services/github';
+import { useStaging } from '../context/StagingContext';
 import { colors, spacing, typography } from '../theme';
 
 export default function RepoDetailScreen({ route, navigation }) {
@@ -66,6 +67,8 @@ export default function RepoDetailScreen({ route, navigation }) {
   }, [load]);
 
   const [defaultBranch, setDefaultBranch] = useState('main');
+  const { getStagedCount } = useStaging();
+  const stagedCount = getStagedCount(owner, repo);
 
   useEffect(() => {
     listBranches(owner, repo).then(setBranches).catch(() => {});
@@ -248,6 +251,16 @@ export default function RepoDetailScreen({ route, navigation }) {
             <Text style={styles.actionButtonText}>New Folder</Text>
           </TouchableOpacity>
         </View>
+        {stagedCount > 0 && (
+          <TouchableOpacity
+            style={styles.stagedBanner}
+            onPress={() => navigation.navigate('StagedChanges', { owner, repo, branch: branch || defaultBranch })}
+          >
+            <Text style={styles.stagedBannerText}>
+              {stagedCount} staged change{stagedCount === 1 ? '' : 's'} - tap to review & commit
+            </Text>
+          </TouchableOpacity>
+        )}
       </View>
 
       {loading ? (
@@ -359,6 +372,15 @@ const styles = StyleSheet.create({
     padding: spacing.sm,
     gap: spacing.sm,
   },
+  stagedBanner: {
+    backgroundColor: 'rgba(210,153,34,0.15)',
+    borderColor: colors.warning,
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: spacing.sm,
+    alignItems: 'center',
+  },
+  stagedBannerText: { color: colors.warning, fontSize: typography.sizeSm, fontWeight: '600' },
   actionBar: {
     flexDirection: 'row',
     gap: spacing.sm,

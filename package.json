@@ -29,6 +29,7 @@
     "react-native-safe-area-context": "~5.8.0",
     "react-native-gesture-handler": "~3.0.2",
     "jszip": "^3.10.1",
+    "diff": "^9.0.0",
     "buffer": "^6.0.3",
     "base-64": "^1.0.0"
   },

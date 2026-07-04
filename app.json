@@ -11,7 +11,8 @@
       "@actualwave/react-native-codeditor",
       "expo-notifications",
       "./plugins/withReleaseSigning.js",
-      "./plugins/withTermuxIntegration.js"
+      "./plugins/withTermuxIntegration.js",
+      "./plugins/withRepoActionsWidget.js"
     ],
     "android": {
       "package": "com.zenas.gitmanager",

@@ -22,6 +22,7 @@ const MENU_ITEMS = [
   { key: 'terminal', label: 'Terminal', icon: '⌨' },
   { key: 'issues', label: 'Issues', icon: '⊙' },
   { key: 'activity', label: 'Recent Activity', icon: '◷' },
+  { key: 'widget', label: 'Home Screen Widget', icon: '▦' },
   { key: 'settings', label: 'Settings', icon: '⚙' },
 ];
 
@@ -77,6 +78,9 @@ export default function SidebarMenu() {
         break;
       case 'activity':
         navigate('Activity');
+        break;
+      case 'widget':
+        navigate('WidgetSettings');
         break;
       case 'settings':
         navigate('MainTabs', { screen: 'Settings' });
