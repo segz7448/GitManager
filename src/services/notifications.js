@@ -63,3 +63,57 @@ export async function removeRunFromWatchlist(owner, repo, runId) {
   const filtered = list.filter((w) => !(w.owner === owner && w.repo === repo && w.runId === runId));
   await writeWatchlist(filtered);
 }
+
+// ---------- Watched repos (auto-notify on every Actions run completion,
+// not just a single manually-picked run) ----------
+
+const WATCHED_REPOS_KEY = 'watched_repos_v1';
+
+async function readWatchedRepos() {
+  try {
+    const raw = await SecureStore.getItemAsync(WATCHED_REPOS_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+async function writeWatchedRepos(list) {
+  await SecureStore.setItemAsync(WATCHED_REPOS_KEY, JSON.stringify(list));
+}
+
+export async function getWatchedRepos() {
+  return readWatchedRepos();
+}
+
+export async function isRepoWatched(owner, repo) {
+  const list = await readWatchedRepos();
+  return list.some((w) => w.owner === owner && w.repo === repo);
+}
+
+/**
+ * lastSeenRunId is seeded to the repo's current latest run at the moment
+ * watching starts, so turning this on doesn't immediately fire a
+ * notification for a run that already finished before you started
+ * watching.
+ */
+export async function addRepoToWatchlist(owner, repo, lastSeenRunId) {
+  const list = await readWatchedRepos();
+  if (list.some((w) => w.owner === owner && w.repo === repo)) return;
+  list.push({ owner, repo, lastSeenRunId: lastSeenRunId || 0 });
+  await writeWatchedRepos(list);
+}
+
+export async function removeRepoFromWatchlist(owner, repo) {
+  const list = await readWatchedRepos();
+  const filtered = list.filter((w) => !(w.owner === owner && w.repo === repo));
+  await writeWatchedRepos(filtered);
+}
+
+export async function updateWatchedRepoLastSeenRunId(owner, repo, runId) {
+  const list = await readWatchedRepos();
+  const updated = list.map((w) =>
+    w.owner === owner && w.repo === repo ? { ...w, lastSeenRunId: runId } : w
+  );
+  await writeWatchedRepos(updated);
+}

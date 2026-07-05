@@ -122,19 +122,30 @@ export default function RunDetailScreen({ route, navigation }) {
     setLogText(null);
     setParsedErrors([]);
     setFailingStepSummary(null);
+
+    const jobIsLive = job.status === 'in_progress' || job.status === 'queued';
+
     try {
       const text = await getJobLogsText(owner, repo, job.id);
       setLogText(text);
       setParsedErrors(parseLogErrors(text));
       setFailingStepSummary(findFailingStep(text));
     } catch (e) {
-      Alert.alert('Failed to load logs', e.message);
-      setView('jobs');
+      if (jobIsLive) {
+        // GitHub's logs endpoint commonly isn't ready yet while a job is
+        // still running - this isn't a real error, just "no output yet".
+        // Don't alarm the person with an error dialog for this.
+        setLogText(null);
+      } else {
+        Alert.alert('Failed to load logs', e.message);
+        setView('jobs');
+        setLogLoading(false);
+        return;
+      }
     } finally {
       setLogLoading(false);
     }
 
-    const jobIsLive = job.status === 'in_progress' || job.status === 'queued';
     setIsStreaming(jobIsLive);
     if (logPollTimerRef.current) clearInterval(logPollTimerRef.current);
     if (jobIsLive) {
@@ -144,10 +155,16 @@ export default function RunDetailScreen({ route, navigation }) {
           // when to stop polling once it completes.
           const jobsData = await listRunJobs(owner, repo, runId);
           const updatedJob = (jobsData.jobs || []).find((j) => j.id === job.id);
-          const text = await getJobLogsText(owner, repo, job.id);
-          setLogText(text);
-          setParsedErrors(parseLogErrors(text));
-          setFailingStepSummary(findFailingStep(text));
+
+          try {
+            const text = await getJobLogsText(owner, repo, job.id);
+            setLogText(text);
+            setParsedErrors(parseLogErrors(text));
+            setFailingStepSummary(findFailingStep(text));
+          } catch (logErr) {
+            // Still not ready - keep showing the "waiting" state rather
+            // than clearing what little we might already have.
+          }
 
           if (updatedJob && updatedJob.status === 'completed') {
             setIsStreaming(false);
@@ -498,6 +515,15 @@ export default function RunDetailScreen({ route, navigation }) {
           </View>
           {logLoading ? (
             <ActivityIndicator style={{ marginTop: spacing.xl }} color={colors.accent} />
+          ) : !logText && isStreaming ? (
+            <View style={styles.waitingBox}>
+              <ActivityIndicator color={colors.accent} />
+              <Text style={styles.waitingText}>
+                Waiting for this job to start producing output. GitHub doesn't make logs
+                available via the API until the job has emitted something - this can take a
+                moment right after a job starts.
+              </Text>
+            </View>
           ) : (
             <ScrollView
               ref={logScrollRef}
@@ -630,6 +656,8 @@ const styles = StyleSheet.create({
   },
   logActionText: { color: colors.accent, fontSize: typography.sizeSm },
   logScroll: { flex: 1, backgroundColor: colors.bgInset },
+  waitingBox: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: spacing.xl },
+  waitingText: { color: colors.fgSubtle, fontSize: typography.sizeSm, textAlign: 'center', marginTop: spacing.md, lineHeight: 18 },
   logText: { color: '#c9d1d9', fontFamily: typography.mono, fontSize: 11, lineHeight: 16 },
   emptyText: { color: colors.fgSubtle, textAlign: 'center', marginTop: spacing.xl },
   failingStepBanner: {

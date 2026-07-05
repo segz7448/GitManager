@@ -7,8 +7,15 @@ import {
   StyleSheet,
   ActivityIndicator,
   RefreshControl,
+  Alert,
 } from 'react-native';
 import { listWorkflowRuns } from '../services/github';
+import {
+  requestNotificationPermission,
+  isRepoWatched,
+  addRepoToWatchlist,
+  removeRepoFromWatchlist,
+} from '../services/notifications';
 import { colors, spacing, typography, statusColors } from '../theme';
 
 export default function ActionsListScreen({ route, navigation }) {
@@ -20,13 +27,59 @@ export default function ActionsListScreen({ route, navigation }) {
   const [error, setError] = useState(null);
   const [page, setPage] = useState(1);
   const [hasNextPage, setHasNextPage] = useState(false);
+  const [autoNotify, setAutoNotify] = useState(false);
+
+  useEffect(() => {
+    isRepoWatched(owner, repo).then(setAutoNotify);
+  }, [owner, repo]);
+
+  const handleToggleAutoNotify = async () => {
+    if (autoNotify) {
+      await removeRepoFromWatchlist(owner, repo);
+      setAutoNotify(false);
+      return;
+    }
+    const granted = await requestNotificationPermission();
+    if (!granted) {
+      Alert.alert(
+        'Notifications disabled',
+        'Enable notifications for GitManager in Android Settings to use this.'
+      );
+      return;
+    }
+    // Seed lastSeenRunId to the current latest run so turning this on
+    // doesn't immediately fire a notification for something that already
+    // finished before you started watching.
+    let lastSeenRunId = 0;
+    try {
+      const { data } = await listWorkflowRuns(owner, repo, { perPage: 1 });
+      if (data.workflow_runs?.[0]) lastSeenRunId = data.workflow_runs[0].id;
+    } catch (e) {
+      // fine to proceed with 0 - worst case one extra notification
+    }
+    await addRepoToWatchlist(owner, repo, lastSeenRunId);
+    setAutoNotify(true);
+    Alert.alert(
+      'Auto-notify enabled',
+      'You\'ll get a notification whenever any Actions run in this repo finishes. Background ' +
+        'checks happen roughly every 15+ minutes (an Android platform limit) - keep the app ' +
+        'backgrounded rather than force-closed for this to work.'
+    );
+  };
 
   navigation.setOptions({
     title: `Actions · ${repo}`,
     headerRight: () => (
-      <TouchableOpacity onPress={() => navigation.navigate('WorkflowDispatch', { owner, repo })} style={{ marginRight: spacing.sm }}>
-        <Text style={{ color: colors.accent, fontWeight: '600' }}>Run ▶</Text>
-      </TouchableOpacity>
+      <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+        <TouchableOpacity onPress={handleToggleAutoNotify} style={{ marginRight: spacing.md }}>
+          <Text style={{ color: autoNotify ? colors.success : colors.fgMuted, fontWeight: '600' }}>
+            {autoNotify ? '🔔 Auto' : '🔕 Auto'}
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity onPress={() => navigation.navigate('WorkflowDispatch', { owner, repo })} style={{ marginRight: spacing.sm }}>
+          <Text style={{ color: colors.accent, fontWeight: '600' }}>Run ▶</Text>
+        </TouchableOpacity>
+      </View>
     ),
   });
 
