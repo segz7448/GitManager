@@ -26,6 +26,9 @@ import ActionsListScreen from './src/screens/ActionsListScreen';
 import PullRequestListScreen from './src/screens/PullRequestListScreen';
 import PullRequestDetailScreen from './src/screens/PullRequestDetailScreen';
 import CreatePullRequestScreen from './src/screens/CreatePullRequestScreen';
+import ReleasesListScreen from './src/screens/ReleasesListScreen';
+import ReleaseDetailScreen from './src/screens/ReleaseDetailScreen';
+import CreateReleaseScreen from './src/screens/CreateReleaseScreen';
 import RunDetailScreen from './src/screens/RunDetailScreen';
 import WorkflowDispatchScreen from './src/screens/WorkflowDispatchScreen';
 import CodeSearchScreen from './src/screens/CodeSearchScreen';
@@ -86,6 +89,9 @@ function ReposStack() {
       <ReposStackNav.Screen name="PullRequests" component={PullRequestListScreen} options={{ title: 'Pull Requests' }} />
       <ReposStackNav.Screen name="PullRequestDetail" component={PullRequestDetailScreen} options={{ title: 'Pull Request' }} />
       <ReposStackNav.Screen name="CreatePullRequest" component={CreatePullRequestScreen} options={{ title: 'New Pull Request' }} />
+      <ReposStackNav.Screen name="Releases" component={ReleasesListScreen} options={{ title: 'Releases' }} />
+      <ReposStackNav.Screen name="ReleaseDetail" component={ReleaseDetailScreen} options={{ title: 'Release' }} />
+      <ReposStackNav.Screen name="CreateRelease" component={CreateReleaseScreen} options={{ title: 'New Release' }} />
       <ReposStackNav.Screen name="RunDetail" component={RunDetailScreen} options={{ title: 'Run' }} />
       <ReposStackNav.Screen name="WorkflowDispatch" component={WorkflowDispatchScreen} options={{ title: 'Run Workflow' }} />
       <ReposStackNav.Screen name="CodeSearch" component={CodeSearchScreen} options={{ title: 'Code Search' }} />

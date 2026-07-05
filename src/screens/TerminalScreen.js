@@ -10,9 +10,17 @@ import {
   KeyboardAvoidingView,
   Platform,
   Linking,
+  Alert,
 } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
 import { getTermuxStatus, runShellCommand } from '../services/termux';
 import { colors, spacing, typography } from '../theme';
+
+const SETUP_COMMANDS = 'mkdir -p ~/.termux\necho "allow-external-apps=true" >> ~/.termux/termux.properties\ntermux-reload-settings';
+
+function isAllowExternalAppsError(text) {
+  return !!text && text.toLowerCase().includes('allow-external-apps');
+}
 
 export default function TerminalScreen() {
   const [status, setStatus] = useState(null); // { termuxInstalled, hasPermission }
@@ -101,9 +109,18 @@ export default function TerminalScreen() {
           GitManager needs the "Run commands in Termux environment" permission, and Termux needs
           external apps allowed. Two steps:
           {'\n\n'}1. In Termux, run:{'\n'}
-          <Text style={styles.code}>echo "allow-external-apps=true" {'>>'} ~/.termux/termux.properties{'\n'}termux-reload-settings</Text>
+          <Text style={styles.code}>{SETUP_COMMANDS}</Text>
           {'\n\n'}2. Grant the permission in Android Settings → Apps → GitManager → Permissions.
         </Text>
+        <TouchableOpacity
+          style={styles.copyButton}
+          onPress={async () => {
+            await Clipboard.setStringAsync(SETUP_COMMANDS);
+            Alert.alert('Copied', 'Paste this into Termux with your volume-down + V, or long-press to paste.');
+          }}
+        >
+          <Text style={styles.copyButtonText}>Copy setup commands</Text>
+        </TouchableOpacity>
         <TouchableOpacity
           style={styles.setupButton}
           onPress={() => Linking.openSettings()}
@@ -135,20 +152,44 @@ export default function TerminalScreen() {
             filesystem. Try: git -C ~/GitManager status
           </Text>
         )}
-        {history.map((h, idx) => (
-          <View key={idx} style={styles.entry}>
-            <Text style={styles.promptLine}>$ {h.command}</Text>
-            {h.pending && <ActivityIndicator style={{ marginTop: spacing.xs }} color={colors.accent} size="small" />}
-            {h.error && <Text style={styles.errorLine}>{h.error}</Text>}
-            {h.stdout ? <Text style={styles.stdoutLine}>{h.stdout}</Text> : null}
-            {h.stderr ? <Text style={styles.stderrLine}>{h.stderr}</Text> : null}
-            {!h.pending && !h.error && (
-              <Text style={styles.exitLine}>
-                exit {h.exitCode}{h.errmsg ? ` · ${h.errmsg}` : ''}
-              </Text>
-            )}
-          </View>
-        ))}
+        {history.map((h, idx) => {
+          const setupErrorText = [h.errmsg, h.stderr, h.stdout, h.error].find(isAllowExternalAppsError);
+          return (
+            <View key={idx} style={styles.entry}>
+              <Text style={styles.promptLine}>$ {h.command}</Text>
+              {h.pending && <ActivityIndicator style={{ marginTop: spacing.xs }} color={colors.accent} size="small" />}
+              {setupErrorText ? (
+                <View style={styles.setupCallout}>
+                  <Text style={styles.setupCalloutTitle}>One-time Termux setup needed</Text>
+                  <Text style={styles.setupCalloutText}>
+                    Run this inside the Termux app itself (not here), then try again:
+                  </Text>
+                  <Text style={styles.code}>{SETUP_COMMANDS}</Text>
+                  <TouchableOpacity
+                    style={styles.copyButtonSmall}
+                    onPress={async () => {
+                      await Clipboard.setStringAsync(SETUP_COMMANDS);
+                      Alert.alert('Copied', 'Paste this into Termux.');
+                    }}
+                  >
+                    <Text style={styles.copyButtonText}>Copy commands</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <>
+                  {h.error && <Text style={styles.errorLine}>{h.error}</Text>}
+                  {h.stdout ? <Text style={styles.stdoutLine}>{h.stdout}</Text> : null}
+                  {h.stderr ? <Text style={styles.stderrLine}>{h.stderr}</Text> : null}
+                </>
+              )}
+              {!h.pending && !h.error && !setupErrorText && (
+                <Text style={styles.exitLine}>
+                  exit {h.exitCode}{h.errmsg ? ` · ${h.errmsg}` : ''}
+                </Text>
+              )}
+            </View>
+          );
+        })}
       </ScrollView>
 
       <View style={styles.inputBar}>
@@ -179,6 +220,15 @@ const styles = StyleSheet.create({
   setupText: { color: colors.fgMuted, fontSize: typography.sizeSm, lineHeight: 20, textAlign: 'left' },
   code: { fontFamily: typography.mono, color: colors.accent, fontSize: 12 },
   setupButton: { backgroundColor: colors.accentEmphasis, borderRadius: 8, paddingVertical: spacing.sm, paddingHorizontal: spacing.lg, marginTop: spacing.lg },
+  copyButton: { borderColor: colors.accent, borderWidth: 1, borderRadius: 8, paddingVertical: spacing.sm, paddingHorizontal: spacing.lg, marginTop: spacing.md },
+  copyButtonSmall: { backgroundColor: colors.accentEmphasis, borderRadius: 6, paddingVertical: spacing.xs, paddingHorizontal: spacing.md, marginTop: spacing.sm, alignSelf: 'flex-start' },
+  copyButtonText: { color: '#fff', fontWeight: '600', fontSize: typography.sizeSm },
+  setupCallout: {
+    backgroundColor: colors.bgSubtle, borderColor: colors.warning, borderWidth: 1,
+    borderRadius: 8, padding: spacing.sm, marginTop: spacing.xs,
+  },
+  setupCalloutTitle: { color: colors.warning, fontWeight: '700', fontSize: typography.sizeSm },
+  setupCalloutText: { color: colors.fgMuted, fontSize: typography.sizeSm, marginTop: 4, marginBottom: spacing.xs },
   setupButtonText: { color: '#fff', fontWeight: '600' },
   retryText: { color: colors.accent, fontSize: typography.sizeSm },
   terminal: { flex: 1 },

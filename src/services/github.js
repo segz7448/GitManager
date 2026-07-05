@@ -567,6 +567,86 @@ export async function mergePullRequest(owner, repo, pullNumber, { commitTitle, c
   });
 }
 
+// ---------- Releases ----------
+
+export async function listReleases(owner, repo, { page = 1, perPage = 30 } = {}) {
+  return requestPaginated(`/repos/${owner}/${repo}/releases?per_page=${perPage}&page=${page}`);
+}
+
+export async function getRelease(owner, repo, releaseId) {
+  return request(`/repos/${owner}/${repo}/releases/${releaseId}`);
+}
+
+export async function createRelease(owner, repo, { tagName, targetCommitish, name, body, draft = false, prerelease = false }) {
+  return request(`/repos/${owner}/${repo}/releases`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      tag_name: tagName,
+      target_commitish: targetCommitish,
+      name,
+      body,
+      draft,
+      prerelease,
+    }),
+  });
+}
+
+export async function updateRelease(owner, repo, releaseId, updates) {
+  return request(`/repos/${owner}/${repo}/releases/${releaseId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(updates),
+  });
+}
+
+export async function deleteRelease(owner, repo, releaseId) {
+  return request(`/repos/${owner}/${repo}/releases/${releaseId}`, { method: 'DELETE' });
+}
+
+/**
+ * Uploads a binary asset (e.g. an APK) to a release. Note the upload host
+ * is uploads.github.com, not api.github.com - GitHub's release object
+ * provides the exact upload_url template to use, so we parse the repo
+ * path out of it rather than hardcoding the uploads host ourselves.
+ */
+export async function uploadReleaseAsset(uploadUrlTemplate, fileName, contentType, base64Data) {
+  const token = await getToken();
+  if (!token) throw new GitHubError('No GitHub token configured', 401, null);
+
+  // upload_url looks like: https://uploads.github.com/repos/o/r/releases/123/assets{?name,label}
+  const uploadUrl = uploadUrlTemplate.replace('{?name,label}', `?name=${encodeURIComponent(fileName)}`);
+
+  const binaryString = decodeBase64Utf8Raw(base64Data);
+  const bytes = new Uint8Array(binaryString.length);
+  for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
+
+  const res = await fetch(uploadUrl, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': contentType,
+      Accept: 'application/vnd.github+json',
+    },
+    body: bytes,
+  });
+
+  if (!res.ok) {
+    let data = null;
+    try { data = await res.json(); } catch (e) {}
+    throw new GitHubError((data && data.message) || `Upload failed: ${res.status}`, res.status, data);
+  }
+  return res.json();
+}
+
+export async function deleteReleaseAsset(owner, repo, assetId) {
+  return request(`/repos/${owner}/${repo}/releases/assets/${assetId}`, { method: 'DELETE' });
+}
+
+function decodeBase64Utf8Raw(b64) {
+  return atob(b64);
+}
+
 // ---------- Actions secrets & variables ----------
 
 export async function getRepoSecretsPublicKey(owner, repo) {
