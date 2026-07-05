@@ -495,6 +495,78 @@ export async function downloadArtifactZipResponse(owner, repo, artifactId) {
   return requestRaw(`/repos/${owner}/${repo}/actions/artifacts/${artifactId}/zip`, { method: 'GET' });
 }
 
+// ---------- Pull Requests ----------
+
+export async function listPullRequests(owner, repo, { state = 'open', page = 1, perPage = 30 } = {}) {
+  const params = new URLSearchParams({ state, per_page: String(perPage), page: String(page), sort: 'updated', direction: 'desc' });
+  return requestPaginated(`/repos/${owner}/${repo}/pulls?${params.toString()}`);
+}
+
+export async function getPullRequest(owner, repo, pullNumber) {
+  return request(`/repos/${owner}/${repo}/pulls/${pullNumber}`);
+}
+
+/**
+ * Per-file changes with unified diff patches - much more useful for a
+ * mobile UI than one giant whole-PR diff blob.
+ */
+export async function getPullRequestFiles(owner, repo, pullNumber, { page = 1, perPage = 50 } = {}) {
+  return request(`/repos/${owner}/${repo}/pulls/${pullNumber}/files?per_page=${perPage}&page=${page}`);
+}
+
+export async function createPullRequest(owner, repo, { title, head, base, body }) {
+  return request(`/repos/${owner}/${repo}/pulls`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title, head, base, body }),
+  });
+}
+
+export async function listPullRequestReviews(owner, repo, pullNumber) {
+  return request(`/repos/${owner}/${repo}/pulls/${pullNumber}/reviews`);
+}
+
+/**
+ * event: 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT'
+ */
+export async function createPullRequestReview(owner, repo, pullNumber, { body, event }) {
+  return request(`/repos/${owner}/${repo}/pulls/${pullNumber}/reviews`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ body, event }),
+  });
+}
+
+/**
+ * Conversation comments (issue-level, shown in the PR's main thread - not
+ * inline code review comments, which use a separate, more complex API).
+ */
+export async function listPullRequestComments(owner, repo, pullNumber) {
+  return request(`/repos/${owner}/${repo}/issues/${pullNumber}/comments`);
+}
+
+export async function createPullRequestComment(owner, repo, pullNumber, body) {
+  return request(`/repos/${owner}/${repo}/issues/${pullNumber}/comments`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ body }),
+  });
+}
+
+/**
+ * mergeMethod: 'merge' | 'squash' | 'rebase'
+ */
+export async function mergePullRequest(owner, repo, pullNumber, { commitTitle, commitMessage, mergeMethod = 'merge' } = {}) {
+  const body = { merge_method: mergeMethod };
+  if (commitTitle) body.commit_title = commitTitle;
+  if (commitMessage) body.commit_message = commitMessage;
+  return request(`/repos/${owner}/${repo}/pulls/${pullNumber}/merge`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
 // ---------- Actions secrets & variables ----------
 
 export async function getRepoSecretsPublicKey(owner, repo) {

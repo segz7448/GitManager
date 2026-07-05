@@ -23,6 +23,9 @@ import FileHistoryScreen from './src/screens/FileHistoryScreen';
 import StagedChangesScreen from './src/screens/StagedChangesScreen';
 import ZipUploadScreen from './src/screens/ZipUploadScreen';
 import ActionsListScreen from './src/screens/ActionsListScreen';
+import PullRequestListScreen from './src/screens/PullRequestListScreen';
+import PullRequestDetailScreen from './src/screens/PullRequestDetailScreen';
+import CreatePullRequestScreen from './src/screens/CreatePullRequestScreen';
 import RunDetailScreen from './src/screens/RunDetailScreen';
 import WorkflowDispatchScreen from './src/screens/WorkflowDispatchScreen';
 import CodeSearchScreen from './src/screens/CodeSearchScreen';
@@ -80,6 +83,9 @@ function ReposStack() {
       <ReposStackNav.Screen name="StagedChanges" component={StagedChangesScreen} options={{ title: 'Staged Changes' }} />
       <ReposStackNav.Screen name="ZipUpload" component={ZipUploadScreen} options={{ title: 'Upload ZIP' }} />
       <ReposStackNav.Screen name="Actions" component={ActionsListScreen} options={{ title: 'Actions' }} />
+      <ReposStackNav.Screen name="PullRequests" component={PullRequestListScreen} options={{ title: 'Pull Requests' }} />
+      <ReposStackNav.Screen name="PullRequestDetail" component={PullRequestDetailScreen} options={{ title: 'Pull Request' }} />
+      <ReposStackNav.Screen name="CreatePullRequest" component={CreatePullRequestScreen} options={{ title: 'New Pull Request' }} />
       <ReposStackNav.Screen name="RunDetail" component={RunDetailScreen} options={{ title: 'Run' }} />
       <ReposStackNav.Screen name="WorkflowDispatch" component={WorkflowDispatchScreen} options={{ title: 'Run Workflow' }} />
       <ReposStackNav.Screen name="CodeSearch" component={CodeSearchScreen} options={{ title: 'Code Search' }} />

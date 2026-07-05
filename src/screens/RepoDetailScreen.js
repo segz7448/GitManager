@@ -246,6 +246,12 @@ export default function RepoDetailScreen({ route, navigation }) {
           >
             <Text style={styles.actionButtonText}>Actions</Text>
           </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.actionButton}
+            onPress={() => navigation.navigate('PullRequests', { owner, repo })}
+          >
+            <Text style={styles.actionButtonText}>Pull Requests</Text>
+          </TouchableOpacity>
         </View>
         <View style={styles.actionBar}>
           <TouchableOpacity
