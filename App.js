@@ -10,8 +10,10 @@ import { AuthProvider, useAuth } from './src/context/AuthContext';
 import { SidebarProvider, useSidebar } from './src/context/SidebarContext';
 import { StagingProvider } from './src/context/StagingContext';
 import SidebarMenu from './src/components/SidebarMenu';
+import RecoveryBanner from './src/components/RecoveryBanner';
 import { navigationRef } from './src/navigation';
 import { ensureBackgroundTaskRegistered } from './src/backgroundTasks';
+import { initDatabase } from './src/db/database';
 import { colors } from './src/theme';
 
 import LoginScreen from './src/screens/LoginScreen';
@@ -148,6 +150,12 @@ function AuthenticatedApp() {
   }, []);
 
   React.useEffect(() => {
+    initDatabase().catch((e) => {
+      console.log('[db init error]', e.message);
+    });
+  }, []);
+
+  React.useEffect(() => {
     const handleUrl = (url) => {
       if (!url || !url.startsWith('gitmanager://')) return;
       // Manual parse instead of the URL API - polyfill behavior for
@@ -204,6 +212,7 @@ function AuthenticatedApp() {
         />
       </RootStack.Navigator>
       <SidebarMenu />
+      <RecoveryBanner />
       </StagingProvider>
     </SidebarProvider>
   );
