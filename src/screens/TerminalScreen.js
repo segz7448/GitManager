@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -11,24 +11,29 @@ import {
   Platform,
   Linking,
   Alert,
+  FlatList,
 } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
-import { getTermuxStatus, runShellCommand } from '../services/termux';
+import { getTermuxStatus, startBackgroundCommand, pollJob, killJob, cleanupJob } from '../services/termux';
+import { createSession, updateSession, listSessions, deleteSession } from '../db/terminalSessions';
 import { colors, spacing, typography } from '../theme';
 
 const SETUP_COMMANDS = 'mkdir -p ~/.termux\necho "allow-external-apps=true" >> ~/.termux/termux.properties\ntermux-reload-settings';
+const POLL_INTERVAL_MS = 1500;
 
 function isAllowExternalAppsError(text) {
   return !!text && text.toLowerCase().includes('allow-external-apps');
 }
 
 export default function TerminalScreen() {
-  const [status, setStatus] = useState(null); // { termuxInstalled, hasPermission }
+  const [status, setStatus] = useState(null);
   const [checkingStatus, setCheckingStatus] = useState(true);
+  const [sessions, setSessions] = useState([]); // local tab list, mirrors terminal_sessions table
+  const [activeJobId, setActiveJobId] = useState(null);
   const [command, setCommand] = useState('');
-  const [running, setRunning] = useState(false);
-  const [history, setHistory] = useState([]); // [{command, stdout, stderr, exitCode, errmsg, timestamp}]
+  const [starting, setStarting] = useState(false);
   const scrollRef = useRef(null);
+  const pollTimersRef = useRef({}); // jobId -> interval handle
 
   const checkStatus = async () => {
     setCheckingStatus(true);
@@ -46,30 +51,122 @@ export default function TerminalScreen() {
     checkStatus();
   }, []);
 
+  // On mount, restore any sessions from previous app launches and resume
+  // polling the ones that weren't finished yet - this is what makes
+  // sessions "persistent" across the app being closed and reopened.
+  useEffect(() => {
+    listSessions().then((existing) => {
+      setSessions(existing);
+      if (existing.length > 0) setActiveJobId(existing[existing.length - 1].jobId);
+      existing.forEach((s) => {
+        if (s.status !== 'finished') startPolling(s.jobId);
+      });
+    });
+    return () => {
+      Object.values(pollTimersRef.current).forEach(clearInterval);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const startPolling = useCallback((jobId) => {
+    if (pollTimersRef.current[jobId]) return; // already polling
+    const tick = async () => {
+      try {
+        const result = await pollJob(jobId);
+        setSessions((prev) =>
+          prev.map((s) =>
+            s.jobId === jobId
+              ? { ...s, lastLog: result.log, status: result.running ? 'running' : 'finished', exitCode: result.exitCode }
+              : s
+          )
+        );
+        await updateSession(jobId, {
+          lastLog: result.log,
+          status: result.running ? 'running' : 'finished',
+          exitCode: result.exitCode,
+        });
+        if (!result.running) {
+          clearInterval(pollTimersRef.current[jobId]);
+          delete pollTimersRef.current[jobId];
+        }
+      } catch (e) {
+        clearInterval(pollTimersRef.current[jobId]);
+        delete pollTimersRef.current[jobId];
+      }
+    };
+    pollTimersRef.current[jobId] = setInterval(tick, POLL_INTERVAL_MS);
+    tick(); // immediate first poll instead of waiting a full interval
+  }, []);
+
   const handleRun = async () => {
     const cmd = command.trim();
     if (!cmd) return;
-    setRunning(true);
+    setStarting(true);
     setCommand('');
-
-    const entry = { command: cmd, timestamp: Date.now(), pending: true };
-    setHistory((prev) => [...prev, entry]);
-
     try {
-      const result = await runShellCommand(cmd);
-      setHistory((prev) =>
-        prev.map((h) => (h === entry ? { ...h, ...result, pending: false } : h))
-      );
+      const jobId = await createSession(cmd, cmd.length > 24 ? `${cmd.slice(0, 24)}…` : cmd);
+      const newSession = {
+        jobId, tabLabel: cmd, command: cmd, status: 'starting', lastLog: '', exitCode: null,
+        createdAt: Date.now(), updatedAt: Date.now(),
+      };
+      setSessions((prev) => [...prev, newSession]);
+      setActiveJobId(jobId);
+
+      await startBackgroundCommand(jobId, cmd);
+      await updateSession(jobId, { status: 'running' });
+      setSessions((prev) => prev.map((s) => (s.jobId === jobId ? { ...s, status: 'running' } : s)));
+      startPolling(jobId);
     } catch (e) {
-      setHistory((prev) =>
-        prev.map((h) =>
-          h === entry ? { ...h, pending: false, error: e.message || 'Command failed' } : h
-        )
-      );
+      Alert.alert('Failed to start command', e.message);
     } finally {
-      setRunning(false);
+      setStarting(false);
       setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
     }
+  };
+
+  const handleKillActive = () => {
+    if (!activeJobId) return;
+    Alert.alert('Stop this command?', 'This sends a kill signal to the running process.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Stop',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            await killJob(activeJobId);
+          } catch (e) {
+            Alert.alert('Failed to stop', e.message);
+          }
+        },
+      },
+    ]);
+  };
+
+  const handleCloseTab = (jobId) => {
+    Alert.alert('Close this tab?', "This stops watching this command and removes its log. If it's still running in the background, it will keep running in Termux.", [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Close',
+        style: 'destructive',
+        onPress: async () => {
+          if (pollTimersRef.current[jobId]) {
+            clearInterval(pollTimersRef.current[jobId]);
+            delete pollTimersRef.current[jobId];
+          }
+          await deleteSession(jobId);
+          cleanupJob(jobId).catch(() => {});
+          setSessions((prev) => {
+            const next = prev.filter((s) => s.jobId !== jobId);
+            if (activeJobId === jobId) setActiveJobId(next.length > 0 ? next[next.length - 1].jobId : null);
+            return next;
+          });
+        },
+      },
+    ]);
+  };
+
+  const handleNewTab = () => {
+    setActiveJobId(null);
   };
 
   if (checkingStatus) {
@@ -134,65 +231,92 @@ export default function TerminalScreen() {
     );
   }
 
+  const activeSession = sessions.find((s) => s.jobId === activeJobId) || null;
+  const setupErrorText = activeSession && isAllowExternalAppsError(activeSession.lastLog) ? activeSession.lastLog : null;
+
   return (
     <KeyboardAvoidingView
       style={styles.flex}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       keyboardVerticalOffset={80}
     >
+      <FlatList
+        horizontal
+        data={sessions}
+        keyExtractor={(s) => s.jobId}
+        style={styles.tabsRow}
+        contentContainerStyle={{ paddingHorizontal: spacing.sm }}
+        renderItem={({ item }) => (
+          <TouchableOpacity
+            style={[styles.tab, activeJobId === item.jobId && styles.tabActive]}
+            onPress={() => setActiveJobId(item.jobId)}
+            onLongPress={() => handleCloseTab(item.jobId)}
+          >
+            <View style={[styles.tabDot, item.status === 'running' ? styles.tabDotRunning : item.status === 'finished' ? (item.exitCode === 0 ? styles.tabDotSuccess : styles.tabDotError) : styles.tabDotStarting]} />
+            <Text style={[styles.tabText, activeJobId === item.jobId && styles.tabTextActive]} numberOfLines={1}>
+              {item.tabLabel}
+            </Text>
+          </TouchableOpacity>
+        )}
+        ListFooterComponent={
+          <TouchableOpacity style={styles.newTabButton} onPress={handleNewTab}>
+            <Text style={styles.newTabButtonText}>+ New</Text>
+          </TouchableOpacity>
+        }
+      />
+
       <ScrollView
         ref={scrollRef}
         style={styles.terminal}
         contentContainerStyle={{ padding: spacing.md }}
         onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: false })}
       >
-        {history.length === 0 && (
+        {!activeSession ? (
           <Text style={styles.hintText}>
             Commands run in your real Termux environment — actual bash, actual git, your actual
-            filesystem. Try: git -C ~/GitManager status
+            filesystem. Output streams in by polling a log file every {POLL_INTERVAL_MS / 1000}s
+            (Android's RUN_COMMAND has no live-streaming channel, so this is the closest
+            equivalent). Try: git -C ~/GitManager status
           </Text>
+        ) : setupErrorText ? (
+          <View style={styles.setupCallout}>
+            <Text style={styles.setupCalloutTitle}>One-time Termux setup needed</Text>
+            <Text style={styles.setupCalloutText}>
+              Run this inside the Termux app itself (not here), then try again:
+            </Text>
+            <Text style={styles.code}>{SETUP_COMMANDS}</Text>
+            <TouchableOpacity
+              style={styles.copyButtonSmall}
+              onPress={async () => {
+                await Clipboard.setStringAsync(SETUP_COMMANDS);
+                Alert.alert('Copied', 'Paste this into Termux.');
+              }}
+            >
+              <Text style={styles.copyButtonText}>Copy commands</Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <View>
+            <Text style={styles.promptLine}>$ {activeSession.command}</Text>
+            {(activeSession.status === 'starting' || activeSession.status === 'running') && (
+              <ActivityIndicator style={{ marginTop: spacing.xs, alignSelf: 'flex-start' }} color={colors.accent} size="small" />
+            )}
+            <Text style={styles.stdoutLine}>{activeSession.lastLog || ''}</Text>
+            {activeSession.status === 'finished' && (
+              <Text style={styles.exitLine}>
+                exit {activeSession.exitCode ?? 'unknown'}
+              </Text>
+            )}
+          </View>
         )}
-        {history.map((h, idx) => {
-          const setupErrorText = [h.errmsg, h.stderr, h.stdout, h.error].find(isAllowExternalAppsError);
-          return (
-            <View key={idx} style={styles.entry}>
-              <Text style={styles.promptLine}>$ {h.command}</Text>
-              {h.pending && <ActivityIndicator style={{ marginTop: spacing.xs }} color={colors.accent} size="small" />}
-              {setupErrorText ? (
-                <View style={styles.setupCallout}>
-                  <Text style={styles.setupCalloutTitle}>One-time Termux setup needed</Text>
-                  <Text style={styles.setupCalloutText}>
-                    Run this inside the Termux app itself (not here), then try again:
-                  </Text>
-                  <Text style={styles.code}>{SETUP_COMMANDS}</Text>
-                  <TouchableOpacity
-                    style={styles.copyButtonSmall}
-                    onPress={async () => {
-                      await Clipboard.setStringAsync(SETUP_COMMANDS);
-                      Alert.alert('Copied', 'Paste this into Termux.');
-                    }}
-                  >
-                    <Text style={styles.copyButtonText}>Copy commands</Text>
-                  </TouchableOpacity>
-                </View>
-              ) : (
-                <>
-                  {h.error && <Text style={styles.errorLine}>{h.error}</Text>}
-                  {h.stdout ? <Text style={styles.stdoutLine}>{h.stdout}</Text> : null}
-                  {h.stderr ? <Text style={styles.stderrLine}>{h.stderr}</Text> : null}
-                </>
-              )}
-              {!h.pending && !h.error && !setupErrorText && (
-                <Text style={styles.exitLine}>
-                  exit {h.exitCode}{h.errmsg ? ` · ${h.errmsg}` : ''}
-                </Text>
-              )}
-            </View>
-          );
-        })}
       </ScrollView>
 
       <View style={styles.inputBar}>
+        {activeSession && activeSession.status === 'running' && (
+          <TouchableOpacity onPress={handleKillActive} style={styles.stopButton}>
+            <Text style={styles.stopButtonText}>Stop</Text>
+          </TouchableOpacity>
+        )}
         <Text style={styles.promptSymbol}>$</Text>
         <TextInput
           style={styles.input}
@@ -203,10 +327,10 @@ export default function TerminalScreen() {
           autoCapitalize="none"
           autoCorrect={false}
           onSubmitEditing={handleRun}
-          editable={!running}
+          editable={!starting}
         />
-        <TouchableOpacity onPress={handleRun} disabled={running || !command.trim()} style={styles.runButton}>
-          {running ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.runButtonText}>Run</Text>}
+        <TouchableOpacity onPress={handleRun} disabled={starting || !command.trim()} style={styles.runButton}>
+          {starting ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.runButtonText}>Run</Text>}
         </TouchableOpacity>
       </View>
     </KeyboardAvoidingView>
@@ -231,19 +355,33 @@ const styles = StyleSheet.create({
   setupCalloutText: { color: colors.fgMuted, fontSize: typography.sizeSm, marginTop: 4, marginBottom: spacing.xs },
   setupButtonText: { color: '#fff', fontWeight: '600' },
   retryText: { color: colors.accent, fontSize: typography.sizeSm },
+  tabsRow: { maxHeight: 44, borderBottomColor: colors.border, borderBottomWidth: 1, backgroundColor: colors.bgSubtle },
+  tab: {
+    flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.sm, marginVertical: spacing.xs,
+    marginRight: spacing.xs, borderRadius: 6, maxWidth: 140,
+  },
+  tabActive: { backgroundColor: colors.bgInset },
+  tabDot: { width: 6, height: 6, borderRadius: 3, marginRight: spacing.xs },
+  tabDotStarting: { backgroundColor: colors.fgSubtle },
+  tabDotRunning: { backgroundColor: colors.warning },
+  tabDotSuccess: { backgroundColor: colors.success },
+  tabDotError: { backgroundColor: colors.danger },
+  tabText: { color: colors.fgMuted, fontSize: 12, fontFamily: typography.mono },
+  tabTextActive: { color: colors.fgDefault, fontWeight: '700' },
+  newTabButton: { justifyContent: 'center', paddingHorizontal: spacing.sm },
+  newTabButtonText: { color: colors.accent, fontWeight: '600', fontSize: 12 },
   terminal: { flex: 1 },
   hintText: { color: colors.fgSubtle, fontSize: typography.sizeSm, fontFamily: typography.mono, lineHeight: 18 },
-  entry: { marginBottom: spacing.md },
   promptLine: { color: colors.accent, fontFamily: typography.mono, fontSize: 13, fontWeight: '700' },
   stdoutLine: { color: '#c9d1d9', fontFamily: typography.mono, fontSize: 12, marginTop: 2, lineHeight: 16 },
-  stderrLine: { color: colors.warning, fontFamily: typography.mono, fontSize: 12, marginTop: 2, lineHeight: 16 },
-  errorLine: { color: colors.danger, fontFamily: typography.mono, fontSize: 12, marginTop: 2 },
   exitLine: { color: colors.fgSubtle, fontFamily: typography.mono, fontSize: 11, marginTop: 4 },
   inputBar: {
     flexDirection: 'row', alignItems: 'center', padding: spacing.sm,
     borderTopColor: colors.border, borderTopWidth: 1, backgroundColor: colors.bgSubtle,
   },
-  promptSymbol: { color: colors.accent, fontFamily: typography.mono, fontWeight: '700', marginHorizontal: spacing.sm },
+  stopButton: { backgroundColor: colors.danger, borderRadius: 6, paddingHorizontal: spacing.sm, paddingVertical: spacing.xs, marginRight: spacing.sm },
+  stopButtonText: { color: '#fff', fontWeight: '600', fontSize: 11 },
+  promptSymbol: { color: colors.accent, fontFamily: typography.mono, fontWeight: '700', marginRight: spacing.sm },
   input: {
     flex: 1, color: colors.fgDefault, fontFamily: typography.mono, fontSize: 13,
     paddingVertical: spacing.sm,

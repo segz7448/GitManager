@@ -168,6 +168,40 @@ export async function verifyToken(token) {
   return { valid: true, user: data };
 }
 
+/**
+ * Reads token metadata GitHub exposes via response headers on any
+ * authenticated request: granted OAuth scopes (classic PATs only - fine-
+ * grained PATs don't return this header since they use a different
+ * permission model) and the token's expiration date, if it has one.
+ * Returns nulls for whatever the token type/header doesn't provide,
+ * rather than guessing.
+ */
+export async function getTokenInfo(tokenOverride) {
+  const token = tokenOverride || (await getToken());
+  if (!token) throw new GitHubError('No GitHub token configured', 401, null);
+
+  const res = await fetch(`${API_BASE}/user`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: 'application/vnd.github+json',
+    },
+  });
+  if (!res.ok) {
+    throw new GitHubError(`Token check failed: ${res.status}`, res.status, null);
+  }
+
+  const scopesHeader = res.headers.get('x-oauth-scopes');
+  const expirationHeader = res.headers.get('github-authentication-token-expiration');
+  const user = await res.json();
+
+  return {
+    user,
+    scopes: scopesHeader ? scopesHeader.split(',').map((s) => s.trim()).filter(Boolean) : null,
+    isFineGrained: !scopesHeader && token.startsWith('github_pat_'),
+    expiresAt: expirationHeader ? new Date(expirationHeader.replace(' UTC', 'Z').replace(' ', 'T')) : null,
+  };
+}
+
 // ---------- Repos ----------
 
 export async function listRepos({ page = 1, perPage = 30, sort = 'updated' } = {}) {
@@ -365,6 +399,26 @@ export async function listBranches(owner, repo) {
   return request(`/repos/${owner}/${repo}/branches?per_page=100`);
 }
 
+export async function getBranch(owner, repo, branch) {
+  return request(`/repos/${owner}/${repo}/branches/${encodeURIComponent(branch)}`);
+}
+
+/**
+ * Full recursive file tree for a branch (paths, blob shas, sizes) - one
+ * call instead of walking directories one level at a time. Used by the
+ * commit-history-aware features (cherry-pick's delete-guard) and by
+ * "Clone repository locally".
+ */
+export async function getRepoTreeRecursive(owner, repo, branch) {
+  const ref = await getRef(owner, repo, branch);
+  const commit = await getCommit(owner, repo, ref.object.sha);
+  return request(`/repos/${owner}/${repo}/git/trees/${commit.tree.sha}?recursive=1`);
+}
+
+export async function getBlobContent(owner, repo, blobSha) {
+  return request(`/repos/${owner}/${repo}/git/blobs/${blobSha}`);
+}
+
 // ---------- Actions / Workflow Runs ----------
 
 export async function listWorkflowRuns(owner, repo, { perPage = 30, page = 1, branch } = {}) {
@@ -452,6 +506,98 @@ export async function createIssue(owner, repo, { title, body }) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ title, body }),
   });
+}
+
+export async function getIssue(owner, repo, issueNumber) {
+  return request(`/repos/${owner}/${repo}/issues/${issueNumber}`);
+}
+
+export async function updateIssueState(owner, repo, issueNumber, state) {
+  // state: 'open' | 'closed'
+  return request(`/repos/${owner}/${repo}/issues/${issueNumber}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ state }),
+  });
+}
+
+export async function listIssueComments(owner, repo, issueNumber, { page = 1, perPage = 30 } = {}) {
+  return requestPaginated(
+    `/repos/${owner}/${repo}/issues/${issueNumber}/comments?per_page=${perPage}&page=${page}`
+  );
+}
+
+export async function createIssueComment(owner, repo, issueNumber, body) {
+  return request(`/repos/${owner}/${repo}/issues/${issueNumber}/comments`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ body }),
+  });
+}
+
+// ---------- Stars & watching ----------
+
+export async function isRepoStarred(owner, repo) {
+  try {
+    await requestRaw(`/user/starred/${owner}/${repo}`, { method: 'GET' });
+    return true;
+  } catch (e) {
+    if (e.status === 404) return false;
+    throw e;
+  }
+}
+
+export async function starRepo(owner, repo) {
+  await requestRaw(`/user/starred/${owner}/${repo}`, { method: 'PUT', headers: { 'Content-Length': '0' } });
+}
+
+export async function unstarRepo(owner, repo) {
+  await requestRaw(`/user/starred/${owner}/${repo}`, { method: 'DELETE' });
+}
+
+/**
+ * GitHub's "watch" concept was superseded by per-repo notification
+ * "subscription" settings, but the subscription endpoint is the closest
+ * equivalent and is what github.com's "Watch" button actually calls.
+ */
+export async function getRepoSubscription(owner, repo) {
+  try {
+    return await request(`/repos/${owner}/${repo}/subscription`);
+  } catch (e) {
+    if (e.status === 404) return { subscribed: false, ignored: false };
+    throw e;
+  }
+}
+
+export async function setRepoSubscription(owner, repo, { subscribed, ignored } = {}) {
+  return request(`/repos/${owner}/${repo}/subscription`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ subscribed, ignored }),
+  });
+}
+
+export async function deleteRepoSubscription(owner, repo) {
+  return request(`/repos/${owner}/${repo}/subscription`, { method: 'DELETE' });
+}
+
+// ---------- Collaborators ----------
+
+export async function listCollaborators(owner, repo) {
+  return request(`/repos/${owner}/${repo}/collaborators`);
+}
+
+export async function addCollaborator(owner, repo, username, permission = 'push') {
+  // permission: 'pull' | 'triage' | 'push' | 'maintain' | 'admin'
+  return request(`/repos/${owner}/${repo}/collaborators/${username}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ permission }),
+  });
+}
+
+export async function removeCollaborator(owner, repo, username) {
+  return request(`/repos/${owner}/${repo}/collaborators/${username}`, { method: 'DELETE' });
 }
 
 // ---------- Activity ----------
@@ -706,6 +852,300 @@ export async function getFileCommitHistory(owner, repo, path, { branch, perPage 
   const params = new URLSearchParams({ path, per_page: String(perPage), page: String(page) });
   if (branch) params.set('sha', branch);
   return request(`/repos/${owner}/${repo}/commits?${params.toString()}`);
+}
+
+/**
+ * Repo-wide commit history (not scoped to a single file), used by the
+ * commit history browser and the undo/revert flows.
+ */
+export async function listRepoCommits(owner, repo, { branch, perPage = 30, page = 1 } = {}) {
+  const params = new URLSearchParams({ per_page: String(perPage), page: String(page) });
+  if (branch) params.set('sha', branch);
+  return request(`/repos/${owner}/${repo}/commits?${params.toString()}`);
+}
+
+/**
+ * Full detail for a single commit, including per-file patches - used to
+ * show what a commit changed before reverting/undoing it.
+ */
+export async function getCommitDetail(owner, repo, sha) {
+  return request(`/repos/${owner}/${repo}/commits/${sha}`);
+}
+
+// ---------- Branch safety helpers ----------
+
+/**
+ * Creates a new branch pointing at the given commit (defaults to the
+ * current tip of `fromBranch`). Used for "auto-create branch before major
+ * operations" (ZIP upload, bulk edits) and manual branch creation.
+ */
+export async function createBranch(owner, repo, newBranchName, fromBranch) {
+  const ref = await getRef(owner, repo, fromBranch);
+  return request(`/repos/${owner}/${repo}/git/refs`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ref: `refs/heads/${newBranchName}`, sha: ref.object.sha }),
+  });
+}
+
+export async function deleteBranch(owner, repo, branchName) {
+  return request(`/repos/${owner}/${repo}/git/refs/heads/${encodeURIComponent(branchName)}`, {
+    method: 'DELETE',
+  });
+}
+
+/**
+ * A timestamped, collision-resistant backup branch name, matching the
+ * requested "gitmanager-backup-YYYYMMDD-HHmm" convention.
+ */
+export function generateBackupBranchName(prefix = 'gitmanager-backup') {
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  return `${prefix}-${stamp}`;
+}
+
+/**
+ * Checks whether `branch`'s remote tip still matches `expectedSha`. Used
+ * right before a push/commit to detect if someone else (or another
+ * device) has moved the branch since the app last read it - i.e. a
+ * conflict - so the app can warn instead of silently overwriting.
+ */
+export async function checkForConflict(owner, repo, branch, expectedSha) {
+  const ref = await getRef(owner, repo, branch);
+  const currentSha = ref.object.sha;
+  return {
+    hasConflict: currentSha !== expectedSha,
+    currentSha,
+    expectedSha,
+  };
+}
+
+/**
+ * Reverts a single commit by creating a new commit whose tree is the
+ * parent's tree re-applied at the tip of the branch (a "revert" in the
+ * sense of "undo what this commit changed", implemented via the Git Data
+ * API since the REST API has no native single-commit revert endpoint).
+ *
+ * This only supports reverting the *tip* commit's tree relative to its
+ * immediate parent cleanly; reverting a commit buried in history can
+ * conflict with later changes to the same files, so the caller should
+ * warn the user this is safest for recent commits.
+ */
+export async function revertCommit(owner, repo, branch, commitSha, message) {
+  const commit = await getCommit(owner, repo, commitSha);
+  if (!commit.parents || commit.parents.length === 0) {
+    throw new Error('Cannot revert the initial commit (it has no parent to restore).');
+  }
+  const parentSha = commit.parents[0].sha;
+  const parentCommit = await getCommit(owner, repo, parentSha);
+
+  const refData = await getRef(owner, repo, branch);
+  const tipSha = refData.object.sha;
+
+  const revertCommitObj = await createGitCommit(
+    owner,
+    repo,
+    message || `Revert "${commit.message.split('\n')[0]}"`,
+    parentCommit.tree.sha,
+    tipSha
+  );
+  await updateRef(owner, repo, branch, revertCommitObj.sha);
+  return revertCommitObj;
+}
+
+/**
+ * Undoes the most recent commit on a branch by force-moving the branch
+ * ref back to its parent. Unlike revertCommit (which adds a new commit
+ * that undoes changes), this rewrites history - so it's only offered
+ * for the tip commit and only when the app itself made that commit in
+ * the current session, to minimize the risk of discarding someone
+ * else's work.
+ */
+export async function undoLastCommit(owner, repo, branch, expectedTipSha) {
+  const refData = await getRef(owner, repo, branch);
+  if (refData.object.sha !== expectedTipSha) {
+    throw new Error('The branch has moved since this commit was made - refusing to undo to avoid losing newer work.');
+  }
+  const tipCommit = await getCommit(owner, repo, refData.object.sha);
+  if (!tipCommit.parents || tipCommit.parents.length === 0) {
+    throw new Error('Cannot undo the initial commit (it has no parent).');
+  }
+  const parentSha = tipCommit.parents[0].sha;
+  await updateRef(owner, repo, branch, parentSha, true);
+  return { restoredSha: parentSha, undoneSha: expectedTipSha };
+}
+
+// ---------- Merge, cherry-pick, fork, clone ----------
+
+/**
+ * Merges one branch into another directly (not via a Pull Request),
+ * using GitHub's native merge endpoint. GitHub performs the merge
+ * server-side and reports a 409 if there's a conflict it can't resolve
+ * automatically - the caller should surface that as "resolve via a Pull
+ * Request instead" since there's no in-app merge-conflict editor.
+ */
+export async function mergeBranch(owner, repo, base, head, commitMessage) {
+  return request(`/repos/${owner}/${repo}/merges`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ base, head, commit_message: commitMessage }),
+  });
+}
+
+/**
+ * Cherry-picks a single commit onto another branch by re-applying its
+ * tree changes as a new commit there. Since GitHub's REST/Git Data APIs
+ * have no native cherry-pick, this is implemented as: take the changed
+ * paths from the source commit's diff (via the repos-commits endpoint,
+ * which includes file patches/content shas) and rebuild a tree on top of
+ * the destination branch with just those blobs replaced.
+ *
+ * This only handles additions/modifications cleanly (a file whose
+ * *content* changed or was added in the source commit). Deletions in the
+ * source commit are also applied. It does not attempt a 3-way textual
+ * merge, so if the destination branch has diverged heavily on the same
+ * lines, the result may not be perfect - the app should show a diff
+ * preview before the user confirms.
+ */
+export async function cherryPickCommit(owner, repo, sourceCommitSha, destBranch, message) {
+  // repos/{owner}/{repo}/commits/{sha} (REST, not git/commits) includes
+  // a `files` array with each changed path's status and content sha.
+  const commitDetail = await request(`/repos/${owner}/${repo}/commits/${sourceCommitSha}`);
+  const files = commitDetail.files || [];
+  if (files.length === 0) {
+    throw new Error('This commit has no file changes to cherry-pick (or touched too many files for GitHub to list).');
+  }
+
+  const destRef = await getRef(owner, repo, destBranch);
+  const destCommit = await getCommit(owner, repo, destRef.object.sha);
+
+  // GitHub's create-tree endpoint errors if asked to delete a path that
+  // doesn't exist in base_tree, so we check the destination tree first
+  // and only emit delete entries for paths actually present there
+  // (e.g. a rename's old path may already be gone if the destination
+  // branch diverged).
+  const destTree = await request(`/repos/${owner}/${repo}/git/trees/${destCommit.tree.sha}?recursive=1`);
+  const destPaths = new Set((destTree.tree || []).map((t) => t.path));
+
+  const treeItems = [];
+  for (const f of files) {
+    if (f.status === 'removed') {
+      if (destPaths.has(f.filename)) {
+        treeItems.push({ path: f.filename, mode: '100644', type: 'blob', sha: null });
+      }
+    } else {
+      // f.sha here is the blob sha in the *source* commit for this file's
+      // new content - reusable directly as a git blob sha since blobs are
+      // content-addressed and shared across the whole repo.
+      treeItems.push({ path: f.filename, mode: '100644', type: 'blob', sha: f.sha });
+      if (f.status === 'renamed' && f.previous_filename && destPaths.has(f.previous_filename)) {
+        // Also remove the old path so the rename actually takes effect
+        // on the destination branch instead of leaving both paths present.
+        treeItems.push({ path: f.previous_filename, mode: '100644', type: 'blob', sha: null });
+      }
+    }
+  }
+
+  const newTree = await createTree(owner, repo, treeItems, destCommit.tree.sha);
+  const newCommit = await createGitCommit(
+    owner,
+    repo,
+    message || `Cherry-pick: ${commitDetail.commit.message.split('\n')[0]}`,
+    newTree.sha,
+    destRef.object.sha
+  );
+  await updateRef(owner, repo, destBranch, newCommit.sha);
+  return newCommit;
+}
+
+/**
+ * Forks a repo into the authenticated user's account (or an org they
+ * belong to, if `organization` is passed). Forking is asynchronous on
+ * GitHub's side - the returned repo object may not be fully ready
+ * (empty/still copying) for a few seconds after this resolves.
+ */
+export async function forkRepo(owner, repo, { organization } = {}) {
+  const body = organization ? { organization } : {};
+  return request(`/repos/${owner}/${repo}/forks`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+// ---------- File / folder management ----------
+
+/**
+ * Renames or moves a single file in one atomic commit: adds the new path
+ * (reusing the existing blob sha, so content isn't re-uploaded) and
+ * removes the old path, both in the same tree/commit. This avoids the
+ * "two separate commits, one succeeds and one doesn't" risk of doing a
+ * delete + create via the Contents API.
+ */
+export async function renameOrMoveFile(owner, repo, branch, oldPath, newPath, blobSha, message) {
+  const refData = await getRef(owner, repo, branch);
+  const baseCommit = await getCommit(owner, repo, refData.object.sha);
+  const newTree = await createTree(
+    owner,
+    repo,
+    [
+      { path: newPath, mode: '100644', type: 'blob', sha: blobSha },
+      { path: oldPath, mode: '100644', type: 'blob', sha: null },
+    ],
+    baseCommit.tree.sha
+  );
+  const commit = await createGitCommit(owner, repo, message || `Rename ${oldPath} to ${newPath}`, newTree.sha, refData.object.sha);
+  await updateRef(owner, repo, branch, commit.sha);
+  return commit;
+}
+
+/**
+ * Renames or moves an entire folder by rewriting every path under the
+ * old prefix to the new prefix, all in one commit. `entries` should be
+ * every blob currently under `oldPrefix` (path + blob sha), typically
+ * obtained by filtering a recursive tree fetch.
+ */
+export async function renameOrMoveFolder(owner, repo, branch, oldPrefix, newPrefix, entries, message) {
+  const refData = await getRef(owner, repo, branch);
+  const baseCommit = await getCommit(owner, repo, refData.object.sha);
+
+  const treeItems = [];
+  for (const entry of entries) {
+    const suffix = entry.path.slice(oldPrefix.length); // includes leading '/'
+    treeItems.push({ path: newPrefix + suffix, mode: '100644', type: 'blob', sha: entry.sha });
+    treeItems.push({ path: entry.path, mode: '100644', type: 'blob', sha: null });
+  }
+
+  const newTree = await createTree(owner, repo, treeItems, baseCommit.tree.sha);
+  const commit = await createGitCommit(
+    owner,
+    repo,
+    message || `Rename ${oldPrefix} to ${newPrefix}`,
+    newTree.sha,
+    refData.object.sha
+  );
+  await updateRef(owner, repo, branch, commit.sha);
+  return commit;
+}
+
+/**
+ * Duplicates a single file at a new path in one commit, reusing the
+ * existing blob sha (no content re-upload needed since blobs are
+ * content-addressed).
+ */
+export async function duplicateFile(owner, repo, branch, sourcePath, destPath, blobSha, message) {
+  const refData = await getRef(owner, repo, branch);
+  const baseCommit = await getCommit(owner, repo, refData.object.sha);
+  const newTree = await createTree(
+    owner,
+    repo,
+    [{ path: destPath, mode: '100644', type: 'blob', sha: blobSha }],
+    baseCommit.tree.sha
+  );
+  const commit = await createGitCommit(owner, repo, message || `Duplicate ${sourcePath} as ${destPath}`, newTree.sha, refData.object.sha);
+  await updateRef(owner, repo, branch, commit.sha);
+  return commit;
 }
 
 // ---------- Base64 helpers (UTF-8 safe, no Buffer dependency issues) ----------

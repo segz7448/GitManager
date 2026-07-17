@@ -23,6 +23,16 @@ import RepoSettingsScreen from './src/screens/RepoSettingsScreen';
 import FileEditorScreen from './src/screens/FileEditorScreen';
 import FileHistoryScreen from './src/screens/FileHistoryScreen';
 import StagedChangesScreen from './src/screens/StagedChangesScreen';
+import RepoSafetyScreen from './src/screens/RepoSafetyScreen';
+import GitToolsScreen from './src/screens/GitToolsScreen';
+import CommitHistoryScreen from './src/screens/CommitHistoryScreen';
+import StashesScreen from './src/screens/StashesScreen';
+import LocalCloneScreen from './src/screens/LocalCloneScreen';
+import CompareRemoteScreen from './src/screens/CompareRemoteScreen';
+import RepoIssuesScreen from './src/screens/RepoIssuesScreen';
+import IssueDetailScreen from './src/screens/IssueDetailScreen';
+import RepoGitHubScreen from './src/screens/RepoGitHubScreen';
+import SecurityScreen from './src/screens/SecurityScreen';
 import ZipUploadScreen from './src/screens/ZipUploadScreen';
 import ActionsListScreen from './src/screens/ActionsListScreen';
 import PullRequestListScreen from './src/screens/PullRequestListScreen';
@@ -86,6 +96,15 @@ function ReposStack() {
       <ReposStackNav.Screen name="FileEditor" component={FileEditorScreen} options={{ title: 'Edit File' }} />
       <ReposStackNav.Screen name="FileHistory" component={FileHistoryScreen} options={{ title: 'History' }} />
       <ReposStackNav.Screen name="StagedChanges" component={StagedChangesScreen} options={{ title: 'Staged Changes' }} />
+      <ReposStackNav.Screen name="RepoSafety" component={RepoSafetyScreen} options={{ title: 'Repository Safety' }} />
+      <ReposStackNav.Screen name="GitTools" component={GitToolsScreen} options={{ title: 'Git Tools' }} />
+      <ReposStackNav.Screen name="CommitHistory" component={CommitHistoryScreen} options={{ title: 'Commit History' }} />
+      <ReposStackNav.Screen name="Stashes" component={StashesScreen} options={{ title: 'Stashes' }} />
+      <ReposStackNav.Screen name="LocalClone" component={LocalCloneScreen} options={{ title: 'Local Clone' }} />
+      <ReposStackNav.Screen name="CompareRemote" component={CompareRemoteScreen} options={{ title: 'Compare with Remote' }} />
+      <ReposStackNav.Screen name="RepoIssues" component={RepoIssuesScreen} options={{ title: 'Issues' }} />
+      <ReposStackNav.Screen name="IssueDetail" component={IssueDetailScreen} options={{ title: 'Issue' }} />
+      <ReposStackNav.Screen name="RepoGitHub" component={RepoGitHubScreen} options={{ title: 'GitHub Management' }} />
       <ReposStackNav.Screen name="ZipUpload" component={ZipUploadScreen} options={{ title: 'Upload ZIP' }} />
       <ReposStackNav.Screen name="Actions" component={ActionsListScreen} options={{ title: 'Actions' }} />
       <ReposStackNav.Screen name="PullRequests" component={PullRequestListScreen} options={{ title: 'Pull Requests' }} />
@@ -209,6 +228,11 @@ function AuthenticatedApp() {
           name="WidgetSettings"
           component={WidgetSettingsScreen}
           options={{ title: 'Home Screen Widget' }}
+        />
+        <RootStack.Screen
+          name="Security"
+          component={SecurityScreen}
+          options={{ title: 'Security' }}
         />
       </RootStack.Navigator>
       <SidebarMenu />

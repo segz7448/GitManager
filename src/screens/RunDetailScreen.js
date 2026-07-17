@@ -30,10 +30,25 @@ import {
   removeRunFromWatchlist,
 } from '../services/notifications';
 import { colors, spacing, typography, statusColors } from '../theme';
+import {
+  startJournalEntry,
+  updateJournalProgress,
+  completeJournalEntry,
+  failJournalEntry,
+} from '../db/sessionJournal';
 
 const API_BASE = 'https://api.github.com';
 const RUN_POLL_INTERVAL_MS = 8000;
 const LOG_POLL_INTERVAL_MS = 5000;
+
+// Same memory-safety reasoning as the ZIP upload screen: artifact zips
+// are read fully into memory as base64 before JSZip can extract them.
+const SAFE_ARTIFACT_BYTES = 150 * 1024 * 1024; // 150MB
+const HARD_LIMIT_ARTIFACT_BYTES = 400 * 1024 * 1024; // 400MB
+
+function yieldToUI() {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
 
 export default function RunDetailScreen({ route, navigation }) {
   const { owner, repo, runId, runName } = route.params;
@@ -240,9 +255,18 @@ export default function RunDetailScreen({ route, navigation }) {
   const handleDownloadArtifact = async (artifact) => {
     setInstallingId(artifact.id);
     setInstallProgress('Downloading 0%');
+    let journalId = null;
     try {
       const token = await getToken();
       const zipUri = FileSystem.cacheDirectory + `artifact-${artifact.id}.zip`;
+
+      journalId = await startJournalEntry('artifact_download', {
+        owner,
+        repo,
+        runId,
+        artifactId: artifact.id,
+        artifactName: artifact.name,
+      });
 
       const downloadResumable = FileSystem.createDownloadResumable(
         `${API_BASE}/repos/${owner}/${repo}/actions/artifacts/${artifact.id}/zip`,
@@ -254,6 +278,7 @@ export default function RunDetailScreen({ route, navigation }) {
               (progress.totalBytesWritten / progress.totalBytesExpectedToWrite) * 100
             );
             setInstallProgress(`Downloading ${pct}%`);
+            updateJournalProgress(journalId, { stage: 'downloading', pct });
           } else {
             // Server didn't send Content-Length - show bytes instead of a percentage
             setInstallProgress(`Downloading ${(progress.totalBytesWritten / 1048576).toFixed(1)} MB`);
@@ -266,11 +291,34 @@ export default function RunDetailScreen({ route, navigation }) {
         throw new Error(`Download failed with status ${downloadResult?.status ?? 'unknown'}`);
       }
 
+      // Guard against huge artifacts before loading them fully into memory
+      // as base64 - this is what previously made extraction silently hang
+      // at "0%" (the read + JSZip.loadAsync call blocked the JS thread for
+      // so long on a large file that no progress update ever painted, and
+      // on lower-RAM devices it could OOM before finishing at all).
+      const zipInfo = await FileSystem.getInfoAsync(zipUri, { size: true });
+      const zipSize = zipInfo.size || 0;
+      if (zipSize > HARD_LIMIT_ARTIFACT_BYTES) {
+        throw new Error(
+          `Artifact is ${(zipSize / 1048576).toFixed(0)}MB, which is too large to extract in-app safely. Download it from github.com instead.`
+        );
+      }
+
       setInstallProgress('Extracting 0%');
+      await updateJournalProgress(journalId, { stage: 'extracting', pct: 0 });
+      await yieldToUI();
+
       const zipBase64 = await FileSystem.readAsStringAsync(zipUri, {
         encoding: FileSystem.EncodingType.Base64,
       });
+      setInstallProgress('Extracting 30%');
+      await updateJournalProgress(journalId, { stage: 'extracting', pct: 30 });
+      await yieldToUI();
+
       const zip = await JSZip.loadAsync(zipBase64, { base64: true });
+      setInstallProgress('Extracting 45%');
+      await updateJournalProgress(journalId, { stage: 'extracting', pct: 45 });
+      await yieldToUI();
 
       // Find the first .apk inside (artifact zips can technically contain
       // multiple files, but our build workflow only uploads one APK).
@@ -288,20 +336,25 @@ export default function RunDetailScreen({ route, navigation }) {
           'No APK found',
           'This artifact doesn\'t contain a .apk file. It may be a different build artifact.'
         );
+        await completeJournalEntry(journalId);
         return;
       }
 
       const apkBase64 = await apkEntry.async('base64', (meta) => {
-        setInstallProgress(`Extracting ${Math.round(meta.percent)}%`);
+        const pct = 45 + Math.round(meta.percent * 0.4); // 45-85%
+        setInstallProgress(`Extracting ${pct}%`);
       });
       const apkUri = FileSystem.cacheDirectory + apkName;
       setInstallProgress('Writing file...');
+      await updateJournalProgress(journalId, { stage: 'writing', pct: 90 });
       await FileSystem.writeAsStringAsync(apkUri, apkBase64, {
         encoding: FileSystem.EncodingType.Base64,
       });
 
       // Clean up the intermediate zip
       await FileSystem.deleteAsync(zipUri, { idempotent: true });
+      await completeJournalEntry(journalId);
+      journalId = null;
 
       const canShare = await Sharing.isAvailableAsync();
       if (canShare) {
@@ -313,6 +366,7 @@ export default function RunDetailScreen({ route, navigation }) {
         Alert.alert('Downloaded', `APK saved to ${apkUri}, but sharing isn't available to install it directly.`);
       }
     } catch (e) {
+      if (journalId) await failJournalEntry(journalId, e.message);
       Alert.alert('Failed to download artifact', e.message);
     } finally {
       setInstallingId(null);

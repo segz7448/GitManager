@@ -7,8 +7,9 @@ import {
   StyleSheet,
   ActivityIndicator,
   Linking,
+  Alert,
 } from 'react-native';
-import { getFileCommitHistory } from '../services/github';
+import { getFileCommitHistory, revertCommit } from '../services/github';
 import { getFileBlame } from '../services/githubGraphql';
 import { colors, spacing, typography } from '../theme';
 
@@ -24,6 +25,7 @@ export default function FileHistoryScreen({ route, navigation }) {
   const [blameLoading, setBlameLoading] = useState(false);
   const [blameError, setBlameError] = useState(null);
   const [blameLoaded, setBlameLoaded] = useState(false);
+  const [revertingSha, setRevertingSha] = useState(null);
 
   navigation.setOptions({ title: path.split('/').pop() });
 
@@ -62,6 +64,35 @@ export default function FileHistoryScreen({ route, navigation }) {
     if (!blameLoaded && !blameLoading) loadBlame();
   };
 
+  const handleRevert = (commit) => {
+    const isTip = commits[0]?.sha === commit.sha;
+    Alert.alert(
+      'Revert this commit?',
+      `This creates a new commit on ${branch || 'the default branch'} that undoes the changes from "${commit.commit.message.split('\n')[0]}". ${
+        isTip ? '' : "Since this isn't the most recent commit, later changes to the same lines may conflict - review the result carefully."
+      }`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Revert',
+          style: 'destructive',
+          onPress: async () => {
+            setRevertingSha(commit.sha);
+            try {
+              await revertCommit(owner, repo, branch, commit.sha);
+              Alert.alert('Reverted', 'A new commit reverting this change was created.');
+              loadHistory();
+            } catch (e) {
+              Alert.alert('Revert failed', e.message);
+            } finally {
+              setRevertingSha(null);
+            }
+          },
+        },
+      ]
+    );
+  };
+
   return (
     <View style={styles.container}>
       <View style={styles.tabBar}>
@@ -96,21 +127,31 @@ export default function FileHistoryScreen({ route, navigation }) {
             contentContainerStyle={{ padding: spacing.md }}
             ListEmptyComponent={<Text style={styles.emptyText}>No commit history found for this file.</Text>}
             renderItem={({ item }) => (
-              <TouchableOpacity
-                style={styles.commitCard}
-                onPress={() => Linking.openURL(item.html_url)}
-              >
-                <Text style={styles.commitMessage} numberOfLines={2}>
-                  {item.commit.message.split('\n')[0]}
-                </Text>
-                <View style={styles.commitMetaRow}>
-                  <Text style={styles.commitAuthor}>{item.commit.author?.name || 'unknown'}</Text>
-                  <Text style={styles.commitDate}>
-                    {new Date(item.commit.author?.date).toLocaleDateString()}
+              <View style={styles.commitCard}>
+                <TouchableOpacity onPress={() => Linking.openURL(item.html_url)}>
+                  <Text style={styles.commitMessage} numberOfLines={2}>
+                    {item.commit.message.split('\n')[0]}
                   </Text>
-                </View>
-                <Text style={styles.commitSha}>{item.sha.slice(0, 7)}</Text>
-              </TouchableOpacity>
+                  <View style={styles.commitMetaRow}>
+                    <Text style={styles.commitAuthor}>{item.commit.author?.name || 'unknown'}</Text>
+                    <Text style={styles.commitDate}>
+                      {new Date(item.commit.author?.date).toLocaleDateString()}
+                    </Text>
+                  </View>
+                  <Text style={styles.commitSha}>{item.sha.slice(0, 7)}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.revertButton}
+                  disabled={revertingSha === item.sha}
+                  onPress={() => handleRevert(item)}
+                >
+                  {revertingSha === item.sha ? (
+                    <ActivityIndicator size="small" color={colors.danger} />
+                  ) : (
+                    <Text style={styles.revertButtonText}>Revert this commit</Text>
+                  )}
+                </TouchableOpacity>
+              </View>
             )}
           />
         )
@@ -175,6 +216,15 @@ const styles = StyleSheet.create({
   commitAuthor: { color: colors.fgMuted, fontSize: typography.sizeSm },
   commitDate: { color: colors.fgSubtle, fontSize: typography.sizeSm },
   commitSha: { color: colors.fgSubtle, fontFamily: typography.mono, fontSize: 11, marginTop: 4 },
+  revertButton: {
+    marginTop: spacing.sm,
+    paddingVertical: spacing.xs,
+    alignItems: 'center',
+    borderRadius: 6,
+    borderColor: colors.danger,
+    borderWidth: 1,
+  },
+  revertButtonText: { color: colors.danger, fontSize: typography.sizeSm, fontWeight: '600' },
   blameCard: {
     backgroundColor: colors.bgSubtle, borderColor: colors.border, borderWidth: 1,
     borderRadius: 10, padding: spacing.md, marginBottom: spacing.sm,

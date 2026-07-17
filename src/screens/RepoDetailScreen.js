@@ -12,9 +12,13 @@ import {
 } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
-import { getContents, deleteFile, createOrUpdateFile, listBranches, commitMultipleFiles, getRepo } from '../services/github';
+import { getContents, deleteFile, createOrUpdateFile, listBranches, commitMultipleFiles, getRepo, renameOrMoveFile, renameOrMoveFolder, duplicateFile, getRepoTreeRecursive } from '../services/github';
 import { useStaging } from '../context/StagingContext';
 import { colors, spacing, typography } from '../theme';
+import FileRow from '../components/FileRow';
+import BranchManagerModal from '../components/BranchManagerModal';
+import FileActionsModal from '../components/FileActionsModal';
+import { saveRepoListing, getCachedRepoListing } from '../db/repoCache';
 
 export default function RepoDetailScreen({ route, navigation }) {
   const { owner, repo, path: initialPath = '' } = route.params;
@@ -33,6 +37,9 @@ export default function RepoDetailScreen({ route, navigation }) {
   const [newFolderName, setNewFolderName] = useState('');
 
   const [importing, setImporting] = useState(false);
+
+  const [fileActionsItem, setFileActionsItem] = useState(null);
+  const [fileActionsBusy, setFileActionsBusy] = useState(false);
 
   navigation.setOptions({
     title: path ? path.split('/').pop() : repo,
@@ -53,6 +60,8 @@ export default function RepoDetailScreen({ route, navigation }) {
     ),
   });
 
+  const [cacheNotice, setCacheNotice] = useState(null);
+
   const load = useCallback(async () => {
     setError(null);
     setLoading(true);
@@ -65,8 +74,19 @@ export default function RepoDetailScreen({ route, navigation }) {
           })
         : [data];
       setItems(sorted);
+      setCacheNotice(null);
+      saveRepoListing(owner, repo, branch, path, sorted).catch(() => {});
     } catch (e) {
-      setError(e.message || 'Failed to load contents');
+      // No network / rate-limited / GitHub down: fall back to the last
+      // successfully cached listing for this exact repo+branch+path
+      // instead of showing a blank error screen with no way to browse.
+      const cached = await getCachedRepoListing(owner, repo, branch, path);
+      if (cached) {
+        setItems(cached.data);
+        setCacheNotice(cached.cachedAt);
+      } else {
+        setError(e.message || 'Failed to load contents');
+      }
     } finally {
       setLoading(false);
     }
@@ -80,10 +100,14 @@ export default function RepoDetailScreen({ route, navigation }) {
   const { getStagedCount } = useStaging();
   const stagedCount = getStagedCount(owner, repo);
 
-  useEffect(() => {
-    listBranches(owner, repo).then(setBranches).catch(() => {});
-    getRepo(owner, repo).then((r) => setDefaultBranch(r.default_branch)).catch(() => {});
+  const refreshBranches = useCallback(() => {
+    return listBranches(owner, repo).then(setBranches).catch(() => {});
   }, [owner, repo]);
+
+  useEffect(() => {
+    refreshBranches();
+    getRepo(owner, repo).then((r) => setDefaultBranch(r.default_branch)).catch(() => {});
+  }, [owner, repo, refreshBranches]);
 
   const handleItemPress = (item) => {
     if (item.type === 'dir') {
@@ -106,6 +130,7 @@ export default function RepoDetailScreen({ route, navigation }) {
               sha: item.sha,
               branch,
             });
+            setFileActionsItem(null);
             load();
           } catch (e) {
             Alert.alert('Delete failed', e.message);
@@ -113,6 +138,52 @@ export default function RepoDetailScreen({ route, navigation }) {
         },
       },
     ]);
+  };
+
+  const handleRenameOrMove = async (item, newPath) => {
+    setFileActionsBusy(true);
+    try {
+      if (item.type === 'dir') {
+        // Folders have no single sha - gather every blob currently under
+        // this prefix so we can rewrite each path in one commit.
+        const tree = await getRepoTreeRecursive(owner, repo, branch || defaultBranch);
+        const prefix = item.path.endsWith('/') ? item.path : `${item.path}/`;
+        const entries = (tree.tree || []).filter((t) => t.type === 'blob' && t.path.startsWith(prefix));
+        if (entries.length === 0) {
+          Alert.alert('Nothing to move', 'This folder appears to be empty (or only contains subfolders GitHub doesn\'t track separately).');
+          return;
+        }
+        await renameOrMoveFolder(owner, repo, branch || defaultBranch, item.path, newPath, entries);
+      } else {
+        await renameOrMoveFile(owner, repo, branch || defaultBranch, item.path, newPath, item.sha);
+      }
+      setFileActionsItem(null);
+      load();
+      Alert.alert('Done', `Renamed/moved to "${newPath}".`);
+    } catch (e) {
+      Alert.alert('Rename/move failed', e.message);
+    } finally {
+      setFileActionsBusy(false);
+    }
+  };
+
+  const handleDuplicate = async (item, destPath) => {
+    setFileActionsBusy(true);
+    try {
+      await duplicateFile(owner, repo, branch || defaultBranch, item.path, destPath, item.sha);
+      setFileActionsItem(null);
+      load();
+      Alert.alert('Duplicated', `Created a copy at "${destPath}".`);
+    } catch (e) {
+      Alert.alert('Duplicate failed', e.message);
+    } finally {
+      setFileActionsBusy(false);
+    }
+  };
+
+  const handleCompareRemote = (item) => {
+    setFileActionsItem(null);
+    navigation.navigate('CompareRemote', { owner, repo, path: item.path, branch: branch || defaultBranch });
   };
 
   const handleCreateFile = async () => {
@@ -206,17 +277,14 @@ export default function RepoDetailScreen({ route, navigation }) {
   };
 
   const renderItem = ({ item }) => (
-    <TouchableOpacity
-      style={styles.row}
+    <FileRow
+      item={item}
+      owner={owner}
+      repo={repo}
+      branch={branch}
       onPress={() => handleItemPress(item)}
-      onLongPress={() => item.type === 'file' && handleDelete(item)}
-    >
-      <Text style={styles.icon}>{item.type === 'dir' ? '📁' : '📄'}</Text>
-      <Text style={styles.name} numberOfLines={1}>{item.name}</Text>
-      {item.type === 'file' && (
-        <Text style={styles.size}>{formatBytes(item.size)}</Text>
-      )}
-    </TouchableOpacity>
+      onLongPress={() => setFileActionsItem(item)}
+    />
   );
 
   return (
@@ -272,6 +340,24 @@ export default function RepoDetailScreen({ route, navigation }) {
           >
             <Text style={styles.actionButtonText}>New Folder</Text>
           </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.actionButton}
+            onPress={() => navigation.navigate('RepoSafety', { owner, repo, branch: branch || defaultBranch })}
+          >
+            <Text style={styles.actionButtonText}>Safety</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.actionButton}
+            onPress={() => navigation.navigate('GitTools', { owner, repo, branch: branch || defaultBranch, defaultBranch })}
+          >
+            <Text style={styles.actionButtonText}>Git Tools</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.actionButton}
+            onPress={() => navigation.navigate('RepoGitHub', { owner, repo })}
+          >
+            <Text style={styles.actionButtonText}>GitHub</Text>
+          </TouchableOpacity>
         </View>
         {stagedCount > 0 && (
           <TouchableOpacity
@@ -295,36 +381,48 @@ export default function RepoDetailScreen({ route, navigation }) {
           </TouchableOpacity>
         </View>
       ) : (
-        <FlatList
-          data={items}
-          keyExtractor={(item) => item.sha || item.path}
-          renderItem={renderItem}
-          contentContainerStyle={{ padding: spacing.md }}
-        />
+        <>
+          {cacheNotice && (
+            <View style={styles.offlineBanner}>
+              <Text style={styles.offlineBannerText}>
+                Showing cached data from {new Date(cacheNotice).toLocaleString()} - couldn't reach GitHub.
+              </Text>
+              <TouchableOpacity onPress={load}>
+                <Text style={styles.offlineBannerRetry}>Retry</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+          <FlatList
+            data={items}
+            keyExtractor={(item) => item.sha || item.path}
+            renderItem={renderItem}
+            contentContainerStyle={{ padding: spacing.md }}
+          />
+        </>
       )}
 
-      <Modal visible={branchModalVisible} transparent animationType="fade">
-        <TouchableOpacity
-          style={styles.modalOverlay}
-          activeOpacity={1}
-          onPress={() => setBranchModalVisible(false)}
-        >
-          <View style={styles.branchList}>
-            {branches.map((b) => (
-              <TouchableOpacity
-                key={b.name}
-                style={styles.branchItem}
-                onPress={() => {
-                  setBranch(b.name);
-                  setBranchModalVisible(false);
-                }}
-              >
-                <Text style={styles.branchText}>{b.name}</Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-        </TouchableOpacity>
-      </Modal>
+      <BranchManagerModal
+        visible={branchModalVisible}
+        onClose={() => setBranchModalVisible(false)}
+        owner={owner}
+        repo={repo}
+        branches={branches}
+        currentBranch={branch || defaultBranch}
+        defaultBranch={defaultBranch}
+        onSwitch={setBranch}
+        onBranchesChanged={refreshBranches}
+      />
+
+      <FileActionsModal
+        visible={!!fileActionsItem}
+        onClose={() => setFileActionsItem(null)}
+        item={fileActionsItem}
+        busy={fileActionsBusy}
+        onRename={handleRenameOrMove}
+        onDuplicate={handleDuplicate}
+        onDelete={handleDelete}
+        onCompare={handleCompareRemote}
+      />
 
       <Modal visible={newFileModalVisible} transparent animationType="slide">
         <View style={styles.modalOverlay}>
@@ -380,12 +478,6 @@ export default function RepoDetailScreen({ route, navigation }) {
   );
 }
 
-function formatBytes(bytes) {
-  if (bytes < 1024) return `${bytes}B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
-}
-
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bgDefault },
   actionBarWrap: {
@@ -403,6 +495,20 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   stagedBannerText: { color: colors.warning, fontSize: typography.sizeSm, fontWeight: '600' },
+  offlineBanner: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: 'rgba(88,166,255,0.12)',
+    borderColor: colors.accent,
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: spacing.sm,
+    marginHorizontal: spacing.md,
+    marginTop: spacing.sm,
+  },
+  offlineBannerText: { color: colors.fgMuted, fontSize: typography.sizeSm, flex: 1, marginRight: spacing.sm },
+  offlineBannerRetry: { color: colors.accent, fontWeight: '600', fontSize: typography.sizeSm },
   actionBar: {
     flexDirection: 'row',
     gap: spacing.sm,

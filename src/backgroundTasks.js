@@ -8,6 +8,8 @@ import {
   updateWatchedRepoLastSeenRunId,
   presentLocalNotification,
 } from './services/notifications';
+import { listSessions, updateSession } from './db/terminalSessions';
+import { pollJob } from './services/termux';
 
 export const BACKGROUND_RUN_CHECK_TASK = 'gitmanager-run-status-check';
 
@@ -70,6 +72,43 @@ TaskManager.defineTask(BACKGROUND_RUN_CHECK_TASK, async () => {
       } catch (e) {
         continue;
       }
+    }
+
+    // 3. Background terminal jobs (see src/services/termux.js) - the
+    // shell command itself keeps running via nohup/disown regardless of
+    // whether this task ever fires, since it lives entirely inside
+    // Termux's process, independent of the RN app's lifecycle. What this
+    // step adds is a completion *notification* for jobs that finished
+    // while the app wasn't open to poll them live. Because Android's
+    // WorkManager enforces a 15-minute floor on background task
+    // intervals, this notification can lag up to ~15 minutes behind the
+    // job actually finishing - the in-app polling in TerminalScreen is
+    // what gives near-real-time updates while the app is open.
+    try {
+      const sessions = await listSessions();
+      const stillTracked = sessions.filter((s) => s.status !== 'finished');
+      for (const session of stillTracked) {
+        try {
+          const result = await pollJob(session.jobId);
+          if (!result.running) {
+            await updateSession(session.jobId, {
+              lastLog: result.log,
+              status: 'finished',
+              exitCode: result.exitCode,
+            });
+            const ok = result.exitCode === 0;
+            await presentLocalNotification(
+              ok ? '✅ Terminal command finished' : '⚠️ Terminal command finished',
+              `${session.tabLabel} · exit ${result.exitCode ?? 'unknown'}`,
+              { jobId: session.jobId }
+            );
+          }
+        } catch (e) {
+          continue;
+        }
+      }
+    } catch (e) {
+      // Termux unavailable or no sessions - not a task failure.
     }
 
     return BackgroundTask.BackgroundTaskResult.Success;

@@ -3,7 +3,7 @@ import { View, Text, TouchableOpacity, StyleSheet, Alert, ScrollView } from 'rea
 import { useAuth } from '../context/AuthContext';
 import { colors, spacing, typography } from '../theme';
 
-export default function SettingsScreen() {
+export default function SettingsScreen({ navigation }) {
   const { username, logout } = useAuth();
 
   const handleLogout = () => {
@@ -19,6 +19,11 @@ export default function SettingsScreen() {
         <Text style={styles.label}>Signed in as</Text>
         <Text style={styles.value}>{username || 'unknown'}</Text>
       </View>
+
+      <TouchableOpacity style={styles.securityRow} onPress={() => navigation.navigate('Security')}>
+        <Text style={styles.securityRowText}>Security · token expiration, scopes, accounts</Text>
+        <Text style={styles.securityRowArrow}>›</Text>
+      </TouchableOpacity>
 
       <TouchableOpacity style={styles.dangerButton} onPress={handleLogout}>
         <Text style={styles.dangerButtonText}>Disconnect Account</Text>
@@ -46,6 +51,13 @@ const styles = StyleSheet.create({
   },
   label: { color: colors.fgMuted, fontSize: typography.sizeSm, textTransform: 'uppercase' },
   value: { color: colors.fgDefault, fontSize: typography.sizeLg, fontWeight: '600', marginTop: spacing.xs },
+  securityRow: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    backgroundColor: colors.bgSubtle, borderColor: colors.border, borderWidth: 1,
+    borderRadius: 10, padding: spacing.md, marginBottom: spacing.lg,
+  },
+  securityRowText: { color: colors.fgDefault, fontSize: typography.sizeSm, flex: 1 },
+  securityRowArrow: { color: colors.fgSubtle, fontSize: typography.sizeLg },
   dangerButton: {
     borderColor: colors.danger,
     borderWidth: 1,
