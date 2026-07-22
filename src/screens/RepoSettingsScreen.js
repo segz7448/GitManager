@@ -15,6 +15,9 @@ import {
   updateRepo,
   deleteRepo,
   transferRepo,
+  getBranchProtection,
+  setBranchProtection,
+  deleteBranchProtection,
   getRepoSecretsPublicKey,
   listRepoSecrets,
   createOrUpdateRepoSecret,
@@ -58,6 +61,14 @@ export default function RepoSettingsScreen({ route, navigation }) {
   const [transferUsername, setTransferUsername] = useState('');
   const [transferring, setTransferring] = useState(false);
 
+  const [protection, setProtection] = useState(null); // null = none configured
+  const [protectionLoading, setProtectionLoading] = useState(true);
+  const [protectionSaving, setProtectionSaving] = useState(false);
+  const [requireReviews, setRequireReviews] = useState(false);
+  const [approvalCount, setApprovalCount] = useState(1);
+  const [enforceAdmins, setEnforceAdmins] = useState(false);
+  const [requireStatusChecks, setRequireStatusChecks] = useState(false);
+
   navigation.setOptions({ title: `Settings · ${repo}` });
 
   const loadRepo = useCallback(async () => {
@@ -98,11 +109,43 @@ export default function RepoSettingsScreen({ route, navigation }) {
     }
   }, [owner, repo]);
 
+  const loadProtection = useCallback(async (branch) => {
+    setProtectionLoading(true);
+    try {
+      const data = await getBranchProtection(owner, repo, branch);
+      setProtection(data);
+      if (data) {
+        setRequireReviews(!!data.required_pull_request_reviews);
+        setApprovalCount(data.required_pull_request_reviews?.required_approving_review_count || 1);
+        setEnforceAdmins(!!data.enforce_admins?.enabled);
+        setRequireStatusChecks(!!data.required_status_checks);
+      } else {
+        setRequireReviews(false);
+        setApprovalCount(1);
+        setEnforceAdmins(false);
+        setRequireStatusChecks(false);
+      }
+    } catch (e) {
+      // Reading protection can 403 for users without admin access to the
+      // repo - treat that the same as "unknown", not a hard error, since
+      // the rest of the settings screen is still usable.
+      setProtection(null);
+    } finally {
+      setProtectionLoading(false);
+    }
+  }, [owner, repo]);
+
   useEffect(() => {
     loadRepo();
     loadSecrets();
     loadVariables();
   }, [loadRepo, loadSecrets, loadVariables]);
+
+  useEffect(() => {
+    if (repoData?.default_branch) {
+      loadProtection(repoData.default_branch);
+    }
+  }, [repoData?.default_branch, loadProtection]);
 
   const handleToggleVisibility = async () => {
     const newValue = !isPrivate;
@@ -232,6 +275,60 @@ export default function RepoSettingsScreen({ route, navigation }) {
         },
       },
     ]);
+  };
+
+  const handleSaveProtection = async () => {
+    if (!repoData?.default_branch) return;
+    setProtectionSaving(true);
+    try {
+      await setBranchProtection(owner, repo, repoData.default_branch, {
+        requireReviews,
+        requiredApprovingReviewCount: approvalCount,
+        enforceAdmins,
+        requireStatusChecks,
+        // Preserve any existing required status check contexts rather
+        // than silently clearing them just because this simplified UI
+        // doesn't have a context picker.
+        statusCheckContexts: protection?.required_status_checks?.contexts || [],
+        strictStatusChecks: protection?.required_status_checks?.strict ?? true,
+      });
+      Alert.alert('Saved', `Branch protection updated for "${repoData.default_branch}".`);
+      loadProtection(repoData.default_branch);
+    } catch (e) {
+      Alert.alert('Failed to save branch protection', e.message);
+    } finally {
+      setProtectionSaving(false);
+    }
+  };
+
+  const handleRemoveProtection = () => {
+    if (!repoData?.default_branch) return;
+    Alert.alert(
+      'Remove branch protection?',
+      `This removes all protection rules from "${repoData.default_branch}", including required reviews and status checks.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: async () => {
+            setProtectionSaving(true);
+            try {
+              await deleteBranchProtection(owner, repo, repoData.default_branch);
+              setProtection(null);
+              setRequireReviews(false);
+              setEnforceAdmins(false);
+              setRequireStatusChecks(false);
+              Alert.alert('Removed', `Branch protection removed from "${repoData.default_branch}".`);
+            } catch (e) {
+              Alert.alert('Failed to remove branch protection', e.message);
+            } finally {
+              setProtectionSaving(false);
+            }
+          },
+        },
+      ]
+    );
   };
 
   const handleDeleteRepo = () => {
@@ -366,6 +463,59 @@ export default function RepoSettingsScreen({ route, navigation }) {
           ))
         )}
       </View>
+
+      <Text style={styles.sectionLabel}>
+        Branch Protection {repoData?.default_branch ? `("${repoData.default_branch}")` : ''}
+      </Text>
+      {protectionLoading ? (
+        <ActivityIndicator color={colors.accent} style={{ marginBottom: spacing.md }} />
+      ) : (
+        <View style={styles.protectionCard}>
+          <TouchableOpacity style={styles.protectionRow} onPress={() => setRequireReviews((v) => !v)}>
+            <View style={[styles.checkbox, requireReviews && styles.checkboxChecked]}>
+              {requireReviews && <Text style={styles.checkboxTick}>✓</Text>}
+            </View>
+            <Text style={styles.protectionRowText}>Require pull request reviews before merging</Text>
+          </TouchableOpacity>
+          {requireReviews && (
+            <View style={styles.approvalCountRow}>
+              <Text style={styles.approvalCountLabel}>Required approvals:</Text>
+              {[1, 2, 3].map((n) => (
+                <TouchableOpacity
+                  key={n}
+                  style={[styles.approvalChip, approvalCount === n && styles.approvalChipActive]}
+                  onPress={() => setApprovalCount(n)}
+                >
+                  <Text style={[styles.approvalChipText, approvalCount === n && styles.approvalChipTextActive]}>{n}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          )}
+          <TouchableOpacity style={styles.protectionRow} onPress={() => setRequireStatusChecks((v) => !v)}>
+            <View style={[styles.checkbox, requireStatusChecks && styles.checkboxChecked]}>
+              {requireStatusChecks && <Text style={styles.checkboxTick}>✓</Text>}
+            </View>
+            <Text style={styles.protectionRowText}>Require status checks to pass before merging</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.protectionRow} onPress={() => setEnforceAdmins((v) => !v)}>
+            <View style={[styles.checkbox, enforceAdmins && styles.checkboxChecked]}>
+              {enforceAdmins && <Text style={styles.checkboxTick}>✓</Text>}
+            </View>
+            <Text style={styles.protectionRowText}>Also enforce these rules for administrators</Text>
+          </TouchableOpacity>
+
+          <View style={styles.protectionActionsRow}>
+            {protection && (
+              <TouchableOpacity style={styles.protectionRemoveButton} onPress={handleRemoveProtection} disabled={protectionSaving}>
+                <Text style={styles.protectionRemoveButtonText}>Remove protection</Text>
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity style={styles.protectionSaveButton} onPress={handleSaveProtection} disabled={protectionSaving}>
+              {protectionSaving ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.protectionSaveButtonText}>Save</Text>}
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
 
       <Text style={styles.sectionLabel}>Danger Zone</Text>
       <View style={styles.dangerCard}>
@@ -531,6 +681,29 @@ const styles = StyleSheet.create({
   itemName: { color: colors.fgDefault, fontFamily: typography.mono, fontSize: typography.sizeSm },
   itemValue: { color: colors.fgSubtle, fontSize: typography.sizeSm, marginTop: 2 },
   deleteLink: { color: colors.danger, fontSize: typography.sizeSm },
+  protectionCard: {
+    backgroundColor: colors.bgSubtle, borderColor: colors.border, borderWidth: 1,
+    borderRadius: 10, padding: spacing.md, marginBottom: spacing.md,
+  },
+  protectionRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: spacing.sm },
+  protectionRowText: { color: colors.fgDefault, fontSize: typography.sizeSm, flex: 1 },
+  checkbox: {
+    width: 20, height: 20, borderRadius: 4, borderWidth: 1.5, borderColor: colors.border,
+    marginRight: spacing.sm, alignItems: 'center', justifyContent: 'center',
+  },
+  checkboxChecked: { backgroundColor: colors.accentEmphasis, borderColor: colors.accentEmphasis },
+  checkboxTick: { color: '#fff', fontSize: 13, fontWeight: '700' },
+  approvalCountRow: { flexDirection: 'row', alignItems: 'center', paddingLeft: spacing.xl, paddingBottom: spacing.sm, gap: spacing.sm },
+  approvalCountLabel: { color: colors.fgMuted, fontSize: typography.sizeSm },
+  approvalChip: { width: 28, height: 28, borderRadius: 14, borderColor: colors.border, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
+  approvalChipActive: { backgroundColor: colors.accentEmphasis, borderColor: colors.accentEmphasis },
+  approvalChipText: { color: colors.fgMuted, fontSize: typography.sizeSm },
+  approvalChipTextActive: { color: '#fff', fontWeight: '700' },
+  protectionActionsRow: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md },
+  protectionRemoveButton: { flex: 1, padding: spacing.sm, alignItems: 'center', borderRadius: 8, borderColor: colors.danger, borderWidth: 1 },
+  protectionRemoveButtonText: { color: colors.danger, fontSize: typography.sizeSm, fontWeight: '600' },
+  protectionSaveButton: { flex: 1, padding: spacing.sm, alignItems: 'center', borderRadius: 8, backgroundColor: colors.successEmphasis },
+  protectionSaveButtonText: { color: '#fff', fontSize: typography.sizeSm, fontWeight: '700' },
   dangerCard: {
     backgroundColor: colors.bgSubtle, borderColor: colors.danger, borderWidth: 1,
     borderRadius: 10, marginBottom: spacing.md, overflow: 'hidden',

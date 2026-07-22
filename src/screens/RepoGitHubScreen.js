@@ -10,6 +10,10 @@ import {
   listCollaborators,
   addCollaborator,
   removeCollaborator,
+  listWebhooks,
+  createWebhook,
+  deleteWebhook,
+  pingWebhook,
 } from '../services/github';
 import { colors, spacing, typography } from '../theme';
 
@@ -23,6 +27,12 @@ export default function RepoGitHubScreen({ route, navigation }) {
   const [collabModalVisible, setCollabModalVisible] = useState(false);
   const [newCollabUsername, setNewCollabUsername] = useState('');
   const [addingCollab, setAddingCollab] = useState(false);
+  const [webhooks, setWebhooks] = useState([]);
+  const [webhookModalVisible, setWebhookModalVisible] = useState(false);
+  const [newWebhookUrl, setNewWebhookUrl] = useState('');
+  const [newWebhookSecret, setNewWebhookSecret] = useState('');
+  const [addingWebhook, setAddingWebhook] = useState(false);
+  const [pingingId, setPingingId] = useState(null);
 
   navigation.setOptions({ title: 'GitHub Management' });
 
@@ -30,6 +40,7 @@ export default function RepoGitHubScreen({ route, navigation }) {
     isRepoStarred(owner, repo).then(setStarred).catch(() => setStarred(false));
     getRepoSubscription(owner, repo).then(setSubscription).catch(() => {});
     listCollaborators(owner, repo).then(setCollaborators).catch(() => setCollaborators([]));
+    listWebhooks(owner, repo).then(setWebhooks).catch(() => setWebhooks([]));
   }, [owner, repo]);
 
   useEffect(() => {
@@ -102,6 +113,54 @@ export default function RepoGitHubScreen({ route, navigation }) {
             refresh();
           } catch (e) {
             Alert.alert('Failed to remove collaborator', e.message);
+          }
+        },
+      },
+    ]);
+  };
+
+  const handleAddWebhook = async () => {
+    const url = newWebhookUrl.trim();
+    if (!url) return;
+    setAddingWebhook(true);
+    try {
+      await createWebhook(owner, repo, { url, secret: newWebhookSecret.trim() || undefined });
+      setNewWebhookUrl('');
+      setNewWebhookSecret('');
+      setWebhookModalVisible(false);
+      refresh();
+      Alert.alert('Added', 'Webhook created. It will fire on pushes to this repo.');
+    } catch (e) {
+      Alert.alert('Failed to add webhook', e.message);
+    } finally {
+      setAddingWebhook(false);
+    }
+  };
+
+  const handlePingWebhook = async (hook) => {
+    setPingingId(hook.id);
+    try {
+      await pingWebhook(owner, repo, hook.id);
+      Alert.alert('Ping sent', 'Check the webhook\'s "Recent Deliveries" on github.com to confirm it was received.');
+    } catch (e) {
+      Alert.alert('Failed to ping webhook', e.message);
+    } finally {
+      setPingingId(null);
+    }
+  };
+
+  const handleDeleteWebhook = (hook) => {
+    Alert.alert('Delete this webhook?', `Remove the webhook pointing to ${hook.config?.url}?`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            await deleteWebhook(owner, repo, hook.id);
+            refresh();
+          } catch (e) {
+            Alert.alert('Failed to delete webhook', e.message);
           }
         },
       },
@@ -202,6 +261,74 @@ export default function RepoGitHubScreen({ route, navigation }) {
           </View>
         </View>
       </Modal>
+
+      <Text style={styles.sectionTitle}>Webhooks</Text>
+      <TouchableOpacity style={styles.row} onPress={() => setWebhookModalVisible(true)}>
+        <Text style={styles.rowText}>+ Add webhook</Text>
+      </TouchableOpacity>
+      <FlatList
+        data={webhooks}
+        keyExtractor={(w) => String(w.id)}
+        scrollEnabled={false}
+        renderItem={({ item }) => (
+          <View style={styles.webhookRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.webhookUrl} numberOfLines={1}>{item.config?.url}</Text>
+              <Text style={styles.webhookMeta}>
+                {(item.events || []).join(', ')} · {item.active ? 'active' : 'disabled'}
+              </Text>
+            </View>
+            <TouchableOpacity onPress={() => handlePingWebhook(item)} disabled={pingingId === item.id} style={{ marginRight: spacing.md }}>
+              {pingingId === item.id ? (
+                <ActivityIndicator size="small" color={colors.accent} />
+              ) : (
+                <Text style={styles.webhookPing}>Ping</Text>
+              )}
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => handleDeleteWebhook(item)}>
+              <Text style={styles.collabRemove}>Remove</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+        ListEmptyComponent={<Text style={styles.emptyText}>No webhooks configured (or you may not have permission to view them).</Text>}
+      />
+
+      <Modal visible={webhookModalVisible} transparent animationType="fade" onRequestClose={() => setWebhookModalVisible(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>Add webhook</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="https://example.com/webhook"
+              placeholderTextColor={colors.fgSubtle}
+              value={newWebhookUrl}
+              onChangeText={setNewWebhookUrl}
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardType="url"
+            />
+            <TextInput
+              style={[styles.input, { marginTop: spacing.sm }]}
+              placeholder="Secret (optional)"
+              placeholderTextColor={colors.fgSubtle}
+              value={newWebhookSecret}
+              onChangeText={setNewWebhookSecret}
+              autoCapitalize="none"
+              autoCorrect={false}
+              secureTextEntry
+            />
+            <Text style={styles.webhookHint}>Fires on pushes to this repo, sent as JSON.</Text>
+            <View style={styles.modalActions}>
+              <TouchableOpacity style={styles.cancelButton} onPress={() => setWebhookModalVisible(false)}>
+                <Text style={styles.cancelButtonText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.confirmButton} onPress={handleAddWebhook} disabled={addingWebhook || !newWebhookUrl.trim()}>
+                {addingWebhook ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.confirmButtonText}>Add</Text>}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
   );
 }
@@ -229,6 +356,15 @@ const styles = StyleSheet.create({
   collabName: { color: colors.fgDefault, fontSize: typography.sizeSm, flex: 1 },
   collabRole: { color: colors.fgSubtle, fontSize: typography.sizeSm, marginRight: spacing.md },
   collabRemove: { color: colors.danger, fontSize: typography.sizeSm, fontWeight: '600' },
+  webhookRow: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: colors.bgSubtle, borderColor: colors.border, borderWidth: 1,
+    borderRadius: 10, padding: spacing.md, marginBottom: spacing.sm,
+  },
+  webhookUrl: { color: colors.fgDefault, fontSize: typography.sizeSm, fontFamily: typography.mono },
+  webhookMeta: { color: colors.fgSubtle, fontSize: 11, marginTop: 2 },
+  webhookPing: { color: colors.accent, fontSize: typography.sizeSm, fontWeight: '600' },
+  webhookHint: { color: colors.fgSubtle, fontSize: typography.sizeSm, marginTop: spacing.sm },
   emptyText: { color: colors.fgSubtle, textAlign: 'center', marginTop: spacing.md },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center' },
   modalCard: { backgroundColor: colors.bgSubtle, borderRadius: 12, borderColor: colors.border, borderWidth: 1, padding: spacing.lg, width: '85%' },

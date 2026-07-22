@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   View,
   Text,
@@ -22,6 +22,8 @@ import {
 import { createAutoBackupBranch } from '../services/repoSafety';
 import { detectProjectType, hasExistingWorkflow } from '../workflows/detectProjectType';
 import { generateWorkflowYaml } from '../workflows/generateWorkflow';
+import { filterIgnoredEntries } from '../utils/gitignoreMatcher';
+import { pickAndWalkFolder } from '../utils/safFolderWalker';
 
 const BINARY_EXTENSIONS = new Set([
   'png', 'jpg', 'jpeg', 'gif', 'webp', 'ico', 'bmp',
@@ -36,6 +38,14 @@ const BINARY_EXTENSIONS = new Set([
 // it just looks like "extraction stuck at 0%". We warn/guard instead.
 const SAFE_ZIP_BYTES = 150 * 1024 * 1024; // 150MB
 const HARD_LIMIT_ZIP_BYTES = 400 * 1024 * 1024; // 400MB
+
+// Direct file/folder uploads (as opposed to a zip) commit one blob per
+// file via sequential API calls (see commitMultipleFiles), rather than
+// one big in-memory decode - so the risk here isn't a memory crash, it's
+// a slow operation that eats into the token's hourly rate limit. Warn
+// past a reasonable count rather than hard-blocking, since it's still
+// the user's call to make.
+const FILE_COUNT_WARNING = 200;
 
 // Yields to the JS event loop so React can flush a re-render (e.g. an
 // updated progress percentage) between synchronous-ish chunks of work.
@@ -60,13 +70,25 @@ export default function ZipUploadScreen({ route, navigation }) {
   const [extractProgress, setExtractProgress] = useState({ pct: 0, label: '' });
   const [fileTree, setFileTree] = useState(null); // [{path, size, binary}]
   const [zipRef, setZipRef] = useState(null);
+  const [uploadSource, setUploadSource] = useState(null); // 'zip' | 'files' | 'folder' | null
   const [committing, setCommitting] = useState(false);
   const [progress, setProgress] = useState({ current: 0, total: 0, label: '' });
   const [autoBackupBranch, setAutoBackupBranch] = useState(true);
   const [suggestedWorkflow, setSuggestedWorkflow] = useState(null); // { detected, yaml } | null
   const [includeWorkflow, setIncludeWorkflow] = useState(true);
   const [checkingWorkflow, setCheckingWorkflow] = useState(false);
+  const [ignoredEntries, setIgnoredEntries] = useState([]); // entries excluded by .gitignore/defaults
+  const [includeIgnoredFiles, setIncludeIgnoredFiles] = useState(false);
+  const [ignoredListExpanded, setIgnoredListExpanded] = useState(false);
   const journalIdRef = React.useRef(null);
+
+  const ignoredPathSet = useMemo(
+    () => new Set(ignoredEntries.map((e) => e.relativePath)),
+    [ignoredEntries]
+  );
+  const effectiveCommitCount = includeIgnoredFiles
+    ? fileTree ? fileTree.length : 0
+    : fileTree ? fileTree.filter((e) => !ignoredPathSet.has(e.relativePath)).length : 0;
 
   const handlePickZip = async () => {
     setPicking(true);
@@ -169,6 +191,9 @@ export default function ZipUploadScreen({ route, navigation }) {
 
       setFileTree(entries);
       setZipRef(zip);
+      setUploadSource('zip');
+      setIgnoredEntries([]);
+      setIncludeIgnoredFiles(false);
 
       // Check whether a CI workflow already exists - either bundled in
       // this zip, or already committed to the target repo/branch - and
@@ -176,12 +201,143 @@ export default function ZipUploadScreen({ route, navigation }) {
       // one. This runs after extraction so it's based on the actual
       // files being uploaded, not a guess from the zip's name.
       checkAndSuggestWorkflow(entries);
+
+      // Filter against the zip's own .gitignore (if it has one) plus a
+      // small built-in default list, so a bulk upload doesn't silently
+      // commit node_modules/, .env, .DS_Store, etc. alongside the actual
+      // project files. This only affects what gets committed by default
+      // - nothing is deleted from the zip, and the user can review and
+      // override it before confirming.
+      checkGitignore(entries, 'zip', zip);
     } catch (e) {
       if (journalId) await failJournalEntry(journalId, e.message);
       Alert.alert('Failed to read zip', e.message);
     } finally {
       setPicking(false);
       setExtracting(false);
+    }
+  };
+
+  const confirmLargeFileCount = (count) => {
+    return new Promise((resolve) => {
+      Alert.alert(
+        'Large selection',
+        `You selected ${count} files. Each one is uploaded as a separate API call, so this may take a while and use a meaningful chunk of your token's hourly rate limit. Continue?`,
+        [
+          { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+          { text: 'Continue', onPress: () => resolve(true) },
+        ]
+      );
+    });
+  };
+
+  const resetPickState = () => {
+    setFileTree(null);
+    setZipRef(null);
+    setUploadSource(null);
+    setSuggestedWorkflow(null);
+    setIncludeWorkflow(true);
+    setIgnoredEntries([]);
+    setIncludeIgnoredFiles(false);
+    setIgnoredListExpanded(false);
+  };
+
+  const handlePickFiles = async () => {
+    setPicking(true);
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        multiple: true,
+        copyToCacheDirectory: true,
+      });
+      if (result.canceled) return;
+
+      const assets = result.assets || [];
+      if (assets.length === 0) return;
+
+      if (assets.length > FILE_COUNT_WARNING) {
+        const proceed = await confirmLargeFileCount(assets.length);
+        if (!proceed) return;
+      }
+
+      // A flat multi-file picker has no folder structure to preserve -
+      // every selected file lands directly at the target path, which
+      // matches how file pickers behave everywhere else (there's no
+      // such thing as "the folder it came from" once individually
+      // selected one by one).
+      const entries = assets.map((asset) => ({
+        path: targetDir ? `${targetDir}/${asset.name}` : asset.name,
+        relativePath: asset.name,
+        binary: isBinaryPath(asset.name),
+        uri: asset.uri,
+        size: asset.size,
+      }));
+
+      setFileTree(entries);
+      setUploadSource('files');
+      setZipRef(null);
+      setIgnoredEntries([]);
+      setIncludeIgnoredFiles(false);
+      checkAndSuggestWorkflow(entries);
+      checkGitignore(entries, 'files', null);
+    } catch (e) {
+      Alert.alert('Failed to select files', e.message);
+    } finally {
+      setPicking(false);
+    }
+  };
+
+  const handlePickFolder = async () => {
+    setPicking(true);
+    try {
+      const result = await pickAndWalkFolder();
+      if (!result) return; // user cancelled the folder picker
+
+      const { files: walked, possiblyIncomplete } = result;
+      if (walked.length === 0) {
+        Alert.alert('Empty folder', "No files found in this folder (or its subfolders couldn't be read).");
+        return;
+      }
+
+      if (possiblyIncomplete) {
+        const proceed = await new Promise((resolve) => {
+          Alert.alert(
+            'Some nested files may be missing',
+            "Android's folder picker sometimes can't reliably read subfolders more than one level deep, so some deeply-nested files may not have been included. If this project has multiple levels of subfolders, zipping it first and using \"Choose ZIP File\" instead is more reliable. Continue with what was found?",
+            [
+              { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+              { text: 'Continue anyway', onPress: () => resolve(true) },
+            ]
+          );
+        });
+        if (!proceed) return;
+      }
+
+      if (walked.length > FILE_COUNT_WARNING) {
+        const proceed = await confirmLargeFileCount(walked.length);
+        if (!proceed) return;
+      }
+
+      const entries = walked.map((w) => ({
+        path: targetDir ? `${targetDir}/${w.relativePath}` : w.relativePath,
+        relativePath: w.relativePath,
+        binary: isBinaryPath(w.relativePath),
+        uri: w.uri,
+      }));
+
+      setFileTree(entries);
+      setUploadSource('folder');
+      setZipRef(null);
+      setIgnoredEntries([]);
+      setIncludeIgnoredFiles(false);
+      checkAndSuggestWorkflow(entries);
+      checkGitignore(entries, 'folder', null);
+    } catch (e) {
+      Alert.alert(
+        'Failed to read folder',
+        `${e.message}\n\nMake sure you granted folder access when prompted.`
+      );
+    } finally {
+      setPicking(false);
     }
   };
 
@@ -229,8 +385,53 @@ export default function ZipUploadScreen({ route, navigation }) {
     }
   };
 
+  const checkGitignore = async (entries, source, zip) => {
+    try {
+      // Look for a .gitignore at the shallowest level present in the
+      // selection (usually the project root). If everything is wrapped
+      // in a single top-level folder, this still finds it one level
+      // down rather than only matching an exact root ".gitignore".
+      const gitignoreEntry = entries
+        .filter((e) => e.relativePath.toLowerCase().endsWith('.gitignore'))
+        .sort((a, b) => a.relativePath.split('/').length - b.relativePath.split('/').length)[0];
+
+      let gitignoreContent = null;
+      if (gitignoreEntry) {
+        try {
+          if (source === 'zip') {
+            gitignoreContent = await zip.file(gitignoreEntry.relativePath).async('string');
+          } else {
+            gitignoreContent = await FileSystem.readAsStringAsync(gitignoreEntry.uri, {
+              encoding: FileSystem.EncodingType.UTF8,
+            });
+          }
+        } catch (e) {
+          gitignoreContent = null;
+        }
+      }
+
+      // filterIgnoredEntries matches against each entry's `path` field,
+      // but gitignore patterns are relative to the project root of the
+      // selection - not to wherever the user chooses to upload within
+      // the target repo. When targetDir is set, entry.path has that
+      // prefix prepended, which would break anchored patterns like
+      // "/build". Match against relativePath instead, then map back to
+      // the real entries so callers still see path/binary/etc as normal.
+      const entriesForMatching = entries.map((e) => ({ ...e, path: e.relativePath }));
+      const { ignored: ignoredForMatching } = filterIgnoredEntries(entriesForMatching, gitignoreContent);
+      const ignoredRelativePaths = new Set(ignoredForMatching.map((e) => e.relativePath));
+      const ignored = entries.filter((e) => ignoredRelativePaths.has(e.relativePath));
+      setIgnoredEntries(ignored);
+    } catch (e) {
+      // Never let a filtering failure block the upload itself - worst
+      // case, nothing gets filtered and the user sees every file as
+      // normal.
+      setIgnoredEntries([]);
+    }
+  };
+
   const handleCommit = async () => {
-    if (!zipRef || !fileTree) return;
+    if (!fileTree) return;
     setCommitting(true);
     let backupBranch = null;
     try {
@@ -241,9 +442,14 @@ export default function ZipUploadScreen({ route, navigation }) {
       // still has exactly what was there before - restorable with one tap
       // from the repo's branch list even if this session is gone.
       if (autoBackupBranch) {
-        setProgress({ current: 0, total: fileTree.length, label: 'Creating safety backup branch…' });
+        setProgress({ current: 0, total: effectiveCommitCount, label: 'Creating safety backup branch…' });
         try {
-          backupBranch = await createAutoBackupBranch(owner, repo, branch, `ZIP upload: ${fileTree.length} files`);
+          backupBranch = await createAutoBackupBranch(
+            owner,
+            repo,
+            branch,
+            `${uploadSource === 'zip' ? 'ZIP upload' : uploadSource === 'folder' ? 'Folder upload' : 'File upload'}: ${effectiveCommitCount} files`
+          );
           if (journalIdRef.current) {
             await updateJournalProgress(journalIdRef.current, { stage: 'backup_branch', backupBranch: backupBranch.branchName });
           }
@@ -270,13 +476,30 @@ export default function ZipUploadScreen({ route, navigation }) {
 
       const files = [];
       for (const entry of fileTree) {
-        const zipEntry = zipRef.file(entry.relativePath);
-        if (entry.binary) {
-          const base64Content = await zipEntry.async('base64');
-          files.push({ path: entry.path, binaryBase64: base64Content });
+        if (!includeIgnoredFiles && ignoredPathSet.has(entry.relativePath)) continue;
+        if (uploadSource === 'zip') {
+          const zipEntry = zipRef.file(entry.relativePath);
+          if (entry.binary) {
+            const base64Content = await zipEntry.async('base64');
+            files.push({ path: entry.path, binaryBase64: base64Content });
+          } else {
+            const textContent = await zipEntry.async('string');
+            files.push({ path: entry.path, content: textContent });
+          }
         } else {
-          const textContent = await zipEntry.async('string');
-          files.push({ path: entry.path, content: textContent });
+          // Individually picked files or a walked folder - read each
+          // file directly off its own URI rather than through JSZip.
+          if (entry.binary) {
+            const base64Content = await FileSystem.readAsStringAsync(entry.uri, {
+              encoding: FileSystem.EncodingType.Base64,
+            });
+            files.push({ path: entry.path, binaryBase64: base64Content });
+          } else {
+            const textContent = await FileSystem.readAsStringAsync(entry.uri, {
+              encoding: FileSystem.EncodingType.UTF8,
+            });
+            files.push({ path: entry.path, content: textContent });
+          }
         }
       }
 
@@ -284,14 +507,15 @@ export default function ZipUploadScreen({ route, navigation }) {
         files.push({ path: '.github/workflows/build.yml', content: suggestedWorkflow.yaml });
       }
 
+      const sourceLabel = uploadSource === 'zip' ? 'zip' : uploadSource === 'folder' ? 'folder' : 'files';
       await commitMultipleFiles(
         owner,
         repo,
         branch,
         files,
         suggestedWorkflow && includeWorkflow
-          ? `Upload ${fileTree.length} file(s) from zip and add CI workflow`
-          : `Upload ${fileTree.length} file(s) from zip`,
+          ? `Upload ${files.length} file(s) from ${sourceLabel} and add CI workflow`
+          : `Upload ${files.length} file(s) from ${sourceLabel}`,
         (current, total, label) => {
           setProgress({ current, total, label });
           if (journalIdRef.current) {
@@ -341,12 +565,25 @@ export default function ZipUploadScreen({ route, navigation }) {
             onPress={handlePickZip}
             disabled={picking || extracting}
           >
-            {picking || extracting ? (
-              <ActivityIndicator color="#fff" />
-            ) : (
-              <Text style={styles.pickButtonText}>Choose ZIP File</Text>
-            )}
+            <Text style={styles.pickButtonText}>Choose ZIP File</Text>
           </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.pickButton, styles.pickButtonSecondary]}
+            onPress={handlePickFiles}
+            disabled={picking || extracting}
+          >
+            <Text style={styles.pickButtonText}>Choose Files</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.pickButton, styles.pickButtonSecondary]}
+            onPress={handlePickFolder}
+            disabled={picking || extracting}
+          >
+            <Text style={styles.pickButtonText}>Choose Folder</Text>
+          </TouchableOpacity>
+          {(picking || extracting) && (
+            <ActivityIndicator color={colors.accent} style={{ marginTop: spacing.md }} />
+          )}
           {extracting && (
             <View style={styles.progressWrap}>
               <View style={styles.progressTrack}>
@@ -358,8 +595,8 @@ export default function ZipUploadScreen({ route, navigation }) {
             </View>
           )}
           <Text style={styles.hint}>
-            The zip will be unpacked in memory on your device. Nothing is uploaded until you
-            confirm the commit below.
+            Upload a ZIP archive, pick individual files, or select a whole folder to upload with
+            its structure preserved. Nothing is uploaded until you confirm the commit below.
           </Text>
         </View>
       ) : (
@@ -369,14 +606,65 @@ export default function ZipUploadScreen({ route, navigation }) {
             keyExtractor={(item) => item.path}
             contentContainerStyle={{ padding: spacing.md }}
             ListHeaderComponent={
-              <Text style={styles.countText}>{fileTree.length} files ready to commit</Text>
+              <>
+                <Text style={styles.countText}>
+                  {effectiveCommitCount} file{effectiveCommitCount === 1 ? '' : 's'} ready to commit
+                  {ignoredEntries.length > 0 && !includeIgnoredFiles ? ` (${ignoredEntries.length} excluded)` : ''}
+                </Text>
+                {ignoredEntries.length > 0 && (
+                  <View style={styles.ignoredCard}>
+                    <Text style={styles.ignoredCardTitle}>
+                      {ignoredEntries.length} file{ignoredEntries.length === 1 ? '' : 's'} matched .gitignore /
+                      common-ignore patterns
+                    </Text>
+                    <TouchableOpacity onPress={() => setIgnoredListExpanded((v) => !v)}>
+                      <Text style={styles.ignoredCardToggleLink}>
+                        {ignoredListExpanded ? 'Hide list' : 'Show list'}
+                      </Text>
+                    </TouchableOpacity>
+                    {ignoredListExpanded && (
+                      <View style={styles.ignoredListBox}>
+                        {ignoredEntries.slice(0, 20).map((e) => (
+                          <Text key={e.relativePath} style={styles.ignoredListItem} numberOfLines={1}>
+                            {e.relativePath}
+                          </Text>
+                        ))}
+                        {ignoredEntries.length > 20 && (
+                          <Text style={styles.ignoredListItem}>…and {ignoredEntries.length - 20} more</Text>
+                        )}
+                      </View>
+                    )}
+                    <TouchableOpacity
+                      style={styles.backupToggleRow}
+                      onPress={() => setIncludeIgnoredFiles((v) => !v)}
+                      disabled={committing}
+                    >
+                      <View style={[styles.checkbox, includeIgnoredFiles && styles.checkboxChecked]}>
+                        {includeIgnoredFiles && <Text style={styles.checkboxTick}>✓</Text>}
+                      </View>
+                      <Text style={styles.backupToggleText}>
+                        Include these files anyway (not recommended)
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
+              </>
             }
-            renderItem={({ item }) => (
-              <View style={styles.fileRow}>
-                <Text style={styles.fileIcon}>{item.binary ? '🗎' : '📄'}</Text>
-                <Text style={styles.filePath} numberOfLines={1}>{item.path}</Text>
-              </View>
-            )}
+            renderItem={({ item }) => {
+              const isIgnoredRow = ignoredPathSet.has(item.relativePath);
+              return (
+                <View style={[styles.fileRow, isIgnoredRow && !includeIgnoredFiles && styles.fileRowIgnored]}>
+                  <Text style={styles.fileIcon}>{item.binary ? '🗎' : '📄'}</Text>
+                  <Text
+                    style={[styles.filePath, isIgnoredRow && !includeIgnoredFiles && styles.filePathIgnored]}
+                    numberOfLines={1}
+                  >
+                    {item.path}
+                  </Text>
+                  {isIgnoredRow && !includeIgnoredFiles && <Text style={styles.ignoredTag}>ignored</Text>}
+                </View>
+              );
+            }}
           />
           <TouchableOpacity
             style={styles.backupToggleRow}
@@ -427,10 +715,7 @@ export default function ZipUploadScreen({ route, navigation }) {
             <TouchableOpacity
               style={styles.cancelButton}
               onPress={() => {
-                setFileTree(null);
-                setZipRef(null);
-                setSuggestedWorkflow(null);
-                setIncludeWorkflow(true);
+                resetPickState();
                 if (journalIdRef.current) {
                   completeJournalEntry(journalIdRef.current);
                   journalIdRef.current = null;
@@ -438,7 +723,7 @@ export default function ZipUploadScreen({ route, navigation }) {
               }}
               disabled={committing}
             >
-              <Text style={styles.cancelButtonText}>Choose Different File</Text>
+              <Text style={styles.cancelButtonText}>Choose Different Source</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={styles.commitButton}
@@ -491,6 +776,17 @@ const styles = StyleSheet.create({
   },
   workflowCardTitle: { color: colors.fgDefault, fontSize: typography.sizeSm, fontWeight: '700', marginBottom: spacing.xs },
   workflowCardDetail: { color: colors.fgMuted, fontSize: typography.sizeSm, lineHeight: 18, marginBottom: spacing.sm },
+  ignoredCard: {
+    marginTop: spacing.sm, marginBottom: spacing.sm, padding: spacing.md,
+    backgroundColor: 'rgba(210,153,34,0.08)', borderColor: colors.warning, borderWidth: 1, borderRadius: 10,
+  },
+  ignoredCardTitle: { color: colors.warning, fontSize: typography.sizeSm, fontWeight: '700' },
+  ignoredCardToggleLink: { color: colors.accent, fontSize: typography.sizeSm, fontWeight: '600', marginTop: spacing.xs },
+  ignoredListBox: { marginTop: spacing.sm, paddingLeft: spacing.sm },
+  ignoredListItem: { color: colors.fgMuted, fontFamily: typography.mono, fontSize: 11, marginTop: 2 },
+  fileRowIgnored: { opacity: 0.5 },
+  filePathIgnored: { textDecorationLine: 'line-through' },
+  ignoredTag: { color: colors.warning, fontSize: 10, fontWeight: '700', marginLeft: spacing.sm },
   container: { flex: 1, backgroundColor: colors.bgDefault },
   header: {
     padding: spacing.md,
@@ -504,7 +800,11 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     paddingVertical: spacing.md,
     paddingHorizontal: spacing.xl,
+    width: '100%',
+    alignItems: 'center',
+    marginBottom: spacing.sm,
   },
+  pickButtonSecondary: { backgroundColor: colors.bgSubtle, borderColor: colors.accent, borderWidth: 1 },
   pickButtonText: { color: '#fff', fontWeight: '600', fontSize: typography.sizeMd },
   hint: { color: colors.fgSubtle, fontSize: typography.sizeSm, textAlign: 'center', marginTop: spacing.lg },
   progressWrap: { width: '100%', marginTop: spacing.lg, alignItems: 'center' },

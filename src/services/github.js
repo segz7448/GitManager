@@ -1,5 +1,6 @@
 import * as SecureStore from 'expo-secure-store';
 import { encode as btoa, decode as atob } from 'base-64';
+import { captureRateLimitHeaders } from './rateLimitTracker';
 
 const API_BASE = 'https://api.github.com';
 const TOKEN_KEY = 'gh_pat_token';
@@ -53,6 +54,7 @@ async function request(path, options = {}) {
   };
 
   const res = await fetch(url, { ...options, headers });
+  captureRateLimitHeaders(res.headers);
 
   // Some endpoints (raw logs) return plain text/zip, not JSON
   const contentType = res.headers.get('content-type') || '';
@@ -90,6 +92,7 @@ async function requestPaginated(path, options = {}) {
   };
 
   const res = await fetch(url, { ...options, headers });
+  captureRateLimitHeaders(res.headers);
   if (!res.ok) {
     let data = null;
     try { data = await res.json(); } catch (e) {}
@@ -140,6 +143,7 @@ async function requestRaw(path, options = {}) {
   };
 
   const res = await fetch(url, { ...options, headers });
+  captureRateLimitHeaders(res.headers);
   if (!res.ok && res.status !== 302) {
     let text = '';
     try { text = await res.text(); } catch (e) {}
@@ -594,6 +598,113 @@ export async function setRepoSubscription(owner, repo, { subscribed, ignored } =
 
 export async function deleteRepoSubscription(owner, repo) {
   return request(`/repos/${owner}/${repo}/subscription`, { method: 'DELETE' });
+}
+
+// ---------- Webhooks ----------
+
+export async function listWebhooks(owner, repo) {
+  return request(`/repos/${owner}/${repo}/hooks`);
+}
+
+export async function createWebhook(owner, repo, { url, contentType = 'json', secret, events = ['push'], active = true }) {
+  const config = { url, content_type: contentType };
+  if (secret) config.secret = secret;
+  return request(`/repos/${owner}/${repo}/hooks`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'web', config, events, active }),
+  });
+}
+
+export async function updateWebhook(owner, repo, hookId, { url, contentType, secret, events, active }) {
+  const body = {};
+  if (events !== undefined) body.events = events;
+  if (active !== undefined) body.active = active;
+  if (url !== undefined || contentType !== undefined || secret !== undefined) {
+    body.config = {};
+    if (url !== undefined) body.config.url = url;
+    if (contentType !== undefined) body.config.content_type = contentType;
+    if (secret !== undefined) body.config.secret = secret;
+  }
+  return request(`/repos/${owner}/${repo}/hooks/${hookId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function deleteWebhook(owner, repo, hookId) {
+  return request(`/repos/${owner}/${repo}/hooks/${hookId}`, { method: 'DELETE' });
+}
+
+/**
+ * Sends a ping event to the webhook - the standard way to verify a
+ * webhook is reachable and correctly configured without waiting for a
+ * real repo event to trigger it.
+ */
+export async function pingWebhook(owner, repo, hookId) {
+  return request(`/repos/${owner}/${repo}/hooks/${hookId}/pings`, { method: 'POST' });
+}
+
+// ---------- Branch protection ----------
+
+/**
+ * Returns null (rather than throwing) when the branch has no protection
+ * configured, since GitHub responds 404 for that case and this is a
+ * normal, common state, not an error condition.
+ */
+export async function getBranchProtection(owner, repo, branch) {
+  try {
+    return await request(`/repos/${owner}/${repo}/branches/${encodeURIComponent(branch)}/protection`);
+  } catch (e) {
+    if (e.status === 404) return null;
+    throw e;
+  }
+}
+
+/**
+ * Sets (or replaces) a branch's protection rule. GitHub requires
+ * required_status_checks, enforce_admins, required_pull_request_reviews,
+ * and restrictions to all be present in the body (each explicitly null
+ * if not wanted) - omitting one entirely is treated differently than
+ * setting it to null, so every field is always sent.
+ */
+export async function setBranchProtection(owner, repo, branch, {
+  requireReviews = false,
+  requiredApprovingReviewCount = 1,
+  dismissStaleReviews = false,
+  requireCodeOwnerReviews = false,
+  enforceAdmins = false,
+  requireStatusChecks = false,
+  strictStatusChecks = true,
+  statusCheckContexts = [],
+} = {}) {
+  const body = {
+    required_status_checks: requireStatusChecks
+      ? { strict: strictStatusChecks, contexts: statusCheckContexts }
+      : null,
+    enforce_admins: enforceAdmins,
+    required_pull_request_reviews: requireReviews
+      ? {
+          required_approving_review_count: requiredApprovingReviewCount,
+          dismiss_stale_reviews: dismissStaleReviews,
+          require_code_owner_reviews: requireCodeOwnerReviews,
+        }
+      : null,
+    restrictions: null,
+  };
+
+  return request(`/repos/${owner}/${repo}/branches/${encodeURIComponent(branch)}/protection`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function deleteBranchProtection(owner, repo, branch) {
+  return request(`/repos/${owner}/${repo}/branches/${encodeURIComponent(branch)}/protection`, {
+    method: 'DELETE',
+  });
 }
 
 // ---------- Collaborators ----------
@@ -1163,6 +1274,19 @@ export async function forkRepo(owner, repo, { organization } = {}) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
+}
+
+/**
+ * Builds the direct URL for GitHub's "download a repository archive
+ * (zip)" endpoint - the same thing github.com's own "Download ZIP"
+ * button uses. This is a redirect (to a temporary signed URL for
+ * private repos, expiring after 5 minutes) rather than the zip bytes
+ * directly, so the caller should pass this straight to a downloader
+ * that follows redirects (e.g. FileSystem.createDownloadResumable),
+ * not fetch it through request()/requestRaw().
+ */
+export function getRepoZipDownloadUrl(owner, repo, ref) {
+  return `${API_BASE}/repos/${owner}/${repo}/zipball/${ref ? encodeURIComponent(ref) : ''}`;
 }
 
 // ---------- File / folder management ----------

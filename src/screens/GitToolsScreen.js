@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, ScrollView, Modal, Alert, ActivityIndicator } from 'react-native';
-import { listBranches, mergeBranch, forkRepo, getRepoTreeRecursive, getFileContent, createCodespace, createOrUpdateFile } from '../services/github';
+import * as FileSystem from 'expo-file-system/legacy';
+import * as Sharing from 'expo-sharing';
+import { listBranches, mergeBranch, forkRepo, getRepoTreeRecursive, getFileContent, createCodespace, listCodespaceMachines, createOrUpdateFile, getRepoZipDownloadUrl, getToken } from '../services/github';
 import { saveLocalClone, getLocalClone } from '../db/localClones';
 import { useStaging } from '../context/StagingContext';
 import { createStash, listStashes } from '../db/stashes';
@@ -32,6 +34,11 @@ export default function GitToolsScreen({ route, navigation }) {
   const [stashCount, setStashCount] = useState(0);
   const [creatingCodespace, setCreatingCodespace] = useState(false);
   const [checkingWorkflow, setCheckingWorkflow] = useState(false);
+  const [machineModalVisible, setMachineModalVisible] = useState(false);
+  const [availableMachines, setAvailableMachines] = useState([]);
+  const [loadingMachines, setLoadingMachines] = useState(false);
+  const [downloadingZip, setDownloadingZip] = useState(false);
+  const [downloadZipProgress, setDownloadZipProgress] = useState(0);
 
   const { getStagedForRepo, clearStaged } = useStaging();
 
@@ -95,21 +102,47 @@ export default function GitToolsScreen({ route, navigation }) {
     ]);
   };
 
-  const handleCreateCodespace = () => {
+  const handleCreateCodespace = async () => {
+    setLoadingMachines(true);
+    try {
+      const { machines } = await listCodespaceMachines(owner, repo, { ref: branch });
+      setAvailableMachines(machines || []);
+      setMachineModalVisible(true);
+    } catch (e) {
+      // Fetching machine options is a nice-to-have, not a hard
+      // requirement - fall back to creating with GitHub's default
+      // machine choice rather than blocking creation entirely.
+      Alert.alert(
+        'Could not load machine types',
+        `${e.message}\n\nYou can still create a codespace with GitHub's default machine.`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Create with default', onPress: () => runCreateCodespace(null) },
+        ]
+      );
+    } finally {
+      setLoadingMachines(false);
+    }
+  };
+
+  const handlePickMachine = (machineName) => {
+    setMachineModalVisible(false);
     Alert.alert(
       'Create a codespace?',
-      `This creates a cloud dev environment for "${branch}" on GitHub's servers. It runs and bills on GitHub's infrastructure, not this device - actual coding happens in a browser tab once it's ready.`,
+      `This creates a cloud dev environment for "${branch}" on GitHub's servers${
+        machineName ? ` (${machineName})` : ''
+      }. It runs and bills on GitHub's infrastructure, not this device - actual coding happens in a browser tab once it's ready.`,
       [
         { text: 'Cancel', style: 'cancel' },
-        { text: 'Create', onPress: runCreateCodespace },
+        { text: 'Create', onPress: () => runCreateCodespace(machineName) },
       ]
     );
   };
 
-  const runCreateCodespace = async () => {
+  const runCreateCodespace = async (machineName) => {
     setCreatingCodespace(true);
     try {
-      const codespace = await createCodespace(owner, repo, { ref: branch });
+      const codespace = await createCodespace(owner, repo, { ref: branch, machine: machineName || undefined });
       Alert.alert(
         'Codespace created',
         `"${codespace.display_name || codespace.name}" is being provisioned. Check the Codespaces tab to open it once it's ready.`,
@@ -233,6 +266,60 @@ export default function GitToolsScreen({ route, navigation }) {
     }
   };
 
+  const handleDownloadRepoZip = () => {
+    Alert.alert(
+      'Download repository as ZIP?',
+      `This downloads "${branch}" from ${owner}/${repo} as a .zip file, same as the "Download ZIP" button on github.com. You'll be able to save it or share it once it's done.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Download', onPress: runDownloadRepoZip },
+      ]
+    );
+  };
+
+  const runDownloadRepoZip = async () => {
+    setDownloadingZip(true);
+    setDownloadZipProgress(0);
+    try {
+      const token = await getToken();
+      const url = getRepoZipDownloadUrl(owner, repo, branch);
+      const destUri = `${FileSystem.cacheDirectory}${repo}-${branch}.zip`;
+
+      const downloadResumable = FileSystem.createDownloadResumable(
+        url,
+        destUri,
+        { headers: { Authorization: `Bearer ${token}` } },
+        (progress) => {
+          if (progress.totalBytesExpectedToWrite > 0) {
+            setDownloadZipProgress(
+              Math.round((progress.totalBytesWritten / progress.totalBytesExpectedToWrite) * 100)
+            );
+          }
+        }
+      );
+
+      const result = await downloadResumable.downloadAsync();
+      if (!result || result.status !== 200) {
+        throw new Error(`Download failed with status ${result?.status ?? 'unknown'}`);
+      }
+
+      const canShare = await Sharing.isAvailableAsync();
+      if (canShare) {
+        await Sharing.shareAsync(destUri, {
+          mimeType: 'application/zip',
+          dialogTitle: `${repo}-${branch}.zip`,
+        });
+      } else {
+        Alert.alert('Downloaded', `Saved to ${destUri}, but sharing isn't available on this device to move it elsewhere.`);
+      }
+    } catch (e) {
+      Alert.alert('Failed to download repository', e.message);
+    } finally {
+      setDownloadingZip(false);
+      setDownloadZipProgress(0);
+    }
+  };
+
   const handleStashCurrent = () => {
     const staged = getStagedForRepo(owner, repo);
     if (staged.length === 0) {
@@ -316,13 +403,27 @@ export default function GitToolsScreen({ route, navigation }) {
           <Text style={styles.rowArrow}>›</Text>
         </TouchableOpacity>
       )}
+      <TouchableOpacity style={styles.row} onPress={handleDownloadRepoZip} disabled={downloadingZip}>
+        {downloadingZip ? (
+          <View>
+            <ActivityIndicator color={colors.accent} size="small" />
+            <Text style={styles.cloneProgressText}>Downloading {downloadZipProgress}%</Text>
+          </View>
+        ) : (
+          <Text style={styles.rowText}>Download "{branch}" as ZIP</Text>
+        )}
+      </TouchableOpacity>
       <TouchableOpacity style={styles.row} onPress={handleFork} disabled={forking}>
         {forking ? <ActivityIndicator color={colors.accent} size="small" /> : <Text style={styles.rowText}>Fork this repository</Text>}
       </TouchableOpacity>
 
       <Text style={styles.sectionTitle}>Codespaces</Text>
-      <TouchableOpacity style={styles.row} onPress={handleCreateCodespace} disabled={creatingCodespace}>
-        {creatingCodespace ? (
+      <TouchableOpacity
+        style={styles.row}
+        onPress={handleCreateCodespace}
+        disabled={creatingCodespace || loadingMachines}
+      >
+        {creatingCodespace || loadingMachines ? (
           <ActivityIndicator color={colors.accent} size="small" />
         ) : (
           <Text style={styles.rowText}>Create a codespace on "{branch}"</Text>
@@ -332,6 +433,25 @@ export default function GitToolsScreen({ route, navigation }) {
         <Text style={styles.rowText}>View all codespaces</Text>
         <Text style={styles.rowArrow}>›</Text>
       </TouchableOpacity>
+
+      <Modal visible={machineModalVisible} transparent animationType="fade" onRequestClose={() => setMachineModalVisible(false)}>
+        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setMachineModalVisible(false)}>
+          <View style={styles.pickerCard}>
+            <Text style={styles.pickerTitle}>Choose a machine type</Text>
+            <TouchableOpacity style={styles.pickerItem} onPress={() => handlePickMachine(null)}>
+              <Text style={styles.pickerItemText}>Default (let GitHub choose)</Text>
+            </TouchableOpacity>
+            {availableMachines.map((m) => (
+              <TouchableOpacity key={m.name} style={styles.pickerItem} onPress={() => handlePickMachine(m.name)}>
+                <Text style={styles.pickerItemText}>{m.display_name}</Text>
+              </TouchableOpacity>
+            ))}
+            {availableMachines.length === 0 && (
+              <Text style={styles.pickerEmptyText}>No specific machine types available for this repo - only the default.</Text>
+            )}
+          </View>
+        </TouchableOpacity>
+      </Modal>
 
       <Modal visible={mergeModalVisible} transparent animationType="fade" onRequestClose={() => setMergeModalVisible(false)}>
         <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setMergeModalVisible(false)}>
@@ -367,4 +487,5 @@ const styles = StyleSheet.create({
   pickerTitle: { color: colors.fgDefault, fontSize: typography.sizeMd, fontWeight: '700', marginBottom: spacing.md },
   pickerItem: { paddingVertical: spacing.sm },
   pickerItemText: { color: colors.fgDefault, fontFamily: typography.mono, fontSize: typography.sizeSm },
+  pickerEmptyText: { color: colors.fgSubtle, fontSize: typography.sizeSm, paddingVertical: spacing.sm },
 });

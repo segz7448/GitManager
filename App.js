@@ -33,6 +33,7 @@ import RepoIssuesScreen from './src/screens/RepoIssuesScreen';
 import IssueDetailScreen from './src/screens/IssueDetailScreen';
 import RepoGitHubScreen from './src/screens/RepoGitHubScreen';
 import SecurityScreen from './src/screens/SecurityScreen';
+import ErrorBoundary from './src/components/ErrorBoundary';
 import ZipUploadScreen from './src/screens/ZipUploadScreen';
 import ActionsListScreen from './src/screens/ActionsListScreen';
 import PullRequestListScreen from './src/screens/PullRequestListScreen';
@@ -275,11 +276,13 @@ function RootNavigator() {
 
 export default function App() {
   return (
-    <SafeAreaProvider>
-      <StatusBar barStyle="light-content" backgroundColor={colors.bgDefault} />
-      <AuthProvider>
-        <RootNavigator />
-      </AuthProvider>
-    </SafeAreaProvider>
+    <ErrorBoundary>
+      <SafeAreaProvider>
+        <StatusBar barStyle="light-content" backgroundColor={colors.bgDefault} />
+        <AuthProvider>
+          <RootNavigator />
+        </AuthProvider>
+      </SafeAreaProvider>
+    </ErrorBoundary>
   );
 }

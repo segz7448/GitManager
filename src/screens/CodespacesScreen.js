@@ -50,8 +50,8 @@ export default function CodespacesScreen({ navigation }) {
   const load = useCallback(async () => {
     setError(null);
     try {
-      const data = await listCodespaces({ perPage: 50 });
-      setCodespaces((data && data.codespaces) || []);
+      const { data } = await listCodespaces({ perPage: 50 });
+      setCodespaces(data.codespaces || []);
     } catch (e) {
       setError(e.message || 'Failed to load codespaces');
     } finally {

@@ -13,6 +13,7 @@ import {
 import { getTokenInfo } from '../services/github';
 import { listAccounts, removeAccount } from '../db/accounts';
 import { useAuth } from '../context/AuthContext';
+import RateLimitIndicator from '../components/RateLimitIndicator';
 import { colors, spacing, typography } from '../theme';
 
 // Recommended scopes for this app to function fully, used only to flag
@@ -174,6 +175,9 @@ export default function SecurityScreen({ navigation }) {
           </TouchableOpacity>
         </View>
       ) : null}
+
+      <Text style={styles.sectionTitle}>API Rate Limit</Text>
+      <RateLimitIndicator />
 
       <Text style={styles.sectionTitle}>Accounts</Text>
       {accounts.map((account) => (
