@@ -47,6 +47,7 @@ import WorkflowDispatchScreen from './src/screens/WorkflowDispatchScreen';
 import CodeSearchScreen from './src/screens/CodeSearchScreen';
 import TerminalScreen from './src/screens/TerminalScreen';
 import CodespacesScreen from './src/screens/CodespacesScreen';
+import CodespaceWebViewScreen from './src/screens/CodespaceWebViewScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import ProfileScreen from './src/screens/ProfileScreen';
 import IssuesScreen from './src/screens/IssuesScreen';
@@ -247,6 +248,11 @@ function AuthenticatedApp() {
           name="Security"
           component={SecurityScreen}
           options={{ title: 'Security' }}
+        />
+        <RootStack.Screen
+          name="CodespaceWebView"
+          component={CodespaceWebViewScreen}
+          options={{ title: 'Codespace' }}
         />
       </RootStack.Navigator>
       <SidebarMenu />

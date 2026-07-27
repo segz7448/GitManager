@@ -1,6 +1,6 @@
 import * as TaskManager from 'expo-task-manager';
 import * as BackgroundTask from 'expo-background-task';
-import { getWorkflowRun, listWorkflowRuns } from './services/github';
+import { getWorkflowRun, listWorkflowRuns, listCodespaces, startCodespace } from './services/github';
 import {
   getWatchlist,
   removeRunFromWatchlist,
@@ -10,6 +10,7 @@ import {
 } from './services/notifications';
 import { listSessions, updateSession } from './db/terminalSessions';
 import { pollJob } from './services/termux';
+import { listAutoRestartNames } from './db/codespaceAutoRestart';
 
 export const BACKGROUND_RUN_CHECK_TASK = 'gitmanager-run-status-check';
 
@@ -109,6 +110,37 @@ TaskManager.defineTask(BACKGROUND_RUN_CHECK_TASK, async () => {
       }
     } catch (e) {
       // Termux unavailable or no sessions - not a task failure.
+    }
+
+    // 4. Codespace auto-restart (see db/codespaceAutoRestart.js) - same
+    // 15-minute floor caveat as the terminal check above applies here:
+    // this can only notice and restart a stopped codespace roughly this
+    // often while the app isn't open, not instantly. The in-app
+    // foreground loop in CodespacesScreen checks much more often
+    // (every 45s) whenever the screen is actually open.
+    try {
+      const autoRestartNames = await listAutoRestartNames();
+      if (autoRestartNames.length > 0) {
+        const result = await listCodespaces({ perPage: 50 });
+        const codespaces = result.codespaces || [];
+        for (const name of autoRestartNames) {
+          const cs = codespaces.find((c) => c.name === name);
+          if (cs && cs.state === 'Shutdown') {
+            try {
+              await startCodespace(name);
+              await presentLocalNotification(
+                '▶️ Codespace restarted',
+                `${cs.display_name || cs.name} was stopped for being idle and has been started back up.`,
+                { codespaceName: name }
+              );
+            } catch (e) {
+              continue;
+            }
+          }
+        }
+      }
+    } catch (e) {
+      // Not a task failure - just nothing to restart this cycle.
     }
 
     return BackgroundTask.BackgroundTaskResult.Success;

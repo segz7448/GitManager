@@ -42,6 +42,10 @@ import * as SQLite from 'expo-sqlite';
  *                         exist and their last known status/log so the
  *                         terminal screen can resume tracking them after
  *                         the app restarts.
+ *  - codespace_auto_restart : which codespaces the user has opted into
+ *                         auto-restart-when-stopped for - see
+ *                         db/codespaceAutoRestart.js for what this can
+ *                         and can't actually do.
  */
 
 let dbPromise = null;
@@ -164,6 +168,11 @@ export async function initDatabase() {
       exit_code INTEGER,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS codespace_auto_restart (
+      codespace_name TEXT PRIMARY KEY NOT NULL,
+      enabled_at INTEGER NOT NULL
     );
   `);
   return db;

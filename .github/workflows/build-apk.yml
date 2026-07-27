@@ -27,7 +27,7 @@ jobs:
           java-version: '17'
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
       - name: Prebuild native Android project
         run: npx expo prebuild --platform android --clean --no-install

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -8,7 +8,7 @@ import {
   ActivityIndicator,
   RefreshControl,
   Alert,
-  Linking,
+  Switch,
 } from 'react-native';
 import {
   listCodespaces,
@@ -16,7 +16,14 @@ import {
   stopCodespace,
   deleteCodespace,
 } from '../services/github';
+import { setAutoRestart, listAutoRestartNames } from '../db/codespaceAutoRestart';
 import { colors, spacing, typography } from '../theme';
+
+// How often to check on codespaces with auto-restart enabled while this
+// screen is open. This is a foreground-only loop - see backgroundTasks.js
+// for what happens while the app isn't open (subject to Android's ~15
+// minute floor on background task intervals).
+const AUTO_RESTART_POLL_MS = 45 * 1000;
 
 const STATE_COLORS = {
   Available: 'success',
@@ -46,6 +53,8 @@ export default function CodespacesScreen({ navigation }) {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(null);
   const [actioningName, setActioningName] = useState(null);
+  const [autoRestartNames, setAutoRestartNames] = useState(new Set());
+  const restartingRef = useRef(new Set()); // names currently being auto-restarted, to avoid duplicate calls
 
   const load = useCallback(async () => {
     setError(null);
@@ -61,6 +70,10 @@ export default function CodespacesScreen({ navigation }) {
   }, []);
 
   useEffect(() => {
+    listAutoRestartNames().then((names) => setAutoRestartNames(new Set(names)));
+  }, []);
+
+  useEffect(() => {
     setLoading(true);
     load();
   }, [load]);
@@ -69,6 +82,60 @@ export default function CodespacesScreen({ navigation }) {
     const unsub = navigation.addListener('focus', load);
     return unsub;
   }, [navigation, load]);
+
+  // Foreground auto-restart loop: while any codespace has this enabled,
+  // periodically check its state and start it back up if GitHub has
+  // stopped it. This does NOT prevent the stop from happening (see the
+  // toggle's own label/description below for why) - it just closes the
+  // gap between "GitHub stopped it" and "it's running again" without the
+  // user needing to notice and tap Start themselves.
+  useEffect(() => {
+    if (autoRestartNames.size === 0) return;
+
+    const interval = setInterval(async () => {
+      try {
+        const result = await listCodespaces({ perPage: 50 });
+        const latest = result.codespaces || [];
+        setCodespaces(latest);
+        for (const cs of latest) {
+          if (
+            autoRestartNames.has(cs.name) &&
+            cs.state === 'Shutdown' &&
+            !restartingRef.current.has(cs.name)
+          ) {
+            restartingRef.current.add(cs.name);
+            startCodespace(cs.name)
+              .then((updated) => {
+                setCodespaces((prev) => prev.map((c) => (c.name === updated.name ? updated : c)));
+              })
+              .catch(() => {})
+              .finally(() => restartingRef.current.delete(cs.name));
+          }
+        }
+      } catch (e) {
+        // Transient network/rate-limit issue - just try again next tick.
+      }
+    }, AUTO_RESTART_POLL_MS);
+
+    return () => clearInterval(interval);
+  }, [autoRestartNames]);
+
+  const handleToggleAutoRestart = async (codespace) => {
+    const nowEnabled = !autoRestartNames.has(codespace.name);
+    setAutoRestartNames((prev) => {
+      const next = new Set(prev);
+      if (nowEnabled) next.add(codespace.name);
+      else next.delete(codespace.name);
+      return next;
+    });
+    await setAutoRestart(codespace.name, nowEnabled);
+    if (nowEnabled) {
+      Alert.alert(
+        'Auto-restart enabled',
+        `While GitManager is open, if GitHub stops "${codespace.display_name || codespace.name}" for being idle, it'll be started back up automatically - usually within a minute of being detected stopped. This can't prevent the idle stop itself (only real activity inside the codespace does that), just shorten how long it stays stopped.`
+      );
+    }
+  };
 
   const onRefresh = () => {
     setRefreshing(true);
@@ -83,7 +150,10 @@ export default function CodespacesScreen({ navigation }) {
       );
       return;
     }
-    Linking.openURL(codespace.web_url);
+    navigation.navigate('CodespaceWebView', {
+      webUrl: codespace.web_url,
+      displayName: codespace.display_name || codespace.name,
+    });
   };
 
   const handleStart = async (codespace) => {
@@ -163,6 +233,18 @@ export default function CodespacesScreen({ navigation }) {
           keyExtractor={(c) => c.name}
           contentContainerStyle={{ padding: spacing.md }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />}
+          ListHeaderComponent={
+            codespaces.length > 0 ? (
+              <View style={styles.infoCard}>
+                <Text style={styles.infoCardText}>
+                  "Auto-restart" checks periodically while GitManager is open and starts a
+                  codespace back up if GitHub has stopped it for being idle. It can't stop the
+                  idle timeout from happening in the first place - only real activity inside the
+                  codespace does that - it just shortens how long it stays stopped.
+                </Text>
+              </View>
+            ) : null
+          }
           ListEmptyComponent={
             <View style={styles.centerBox}>
               <Text style={styles.emptyText}>
@@ -232,12 +314,22 @@ export default function CodespacesScreen({ navigation }) {
                   disabled={item.state !== 'Available'}
                 >
                   <Text style={[styles.openButtonText, item.state !== 'Available' && styles.disabledText]}>
-                    Open in browser
+                    Open
                   </Text>
                 </TouchableOpacity>
                 <TouchableOpacity onPress={() => handleDelete(item)} disabled={actioningName === item.name}>
                   <Text style={styles.deleteText}>Delete</Text>
                 </TouchableOpacity>
+              </View>
+
+              <View style={styles.autoRestartRow}>
+                <Text style={styles.autoRestartLabel}>Auto-restart if GitHub stops it</Text>
+                <Switch
+                  value={autoRestartNames.has(item.name)}
+                  onValueChange={() => handleToggleAutoRestart(item)}
+                  trackColor={{ false: colors.borderMuted, true: colors.accentEmphasis }}
+                  thumbColor="#fff"
+                />
               </View>
             </View>
           )}
@@ -256,6 +348,11 @@ const styles = StyleSheet.create({
   retryButton: { marginTop: spacing.md, padding: spacing.sm },
   retryText: { color: colors.accent },
   emptyText: { color: colors.fgSubtle, textAlign: 'center', lineHeight: 20 },
+  infoCard: {
+    backgroundColor: 'rgba(88,166,255,0.08)', borderColor: colors.accent, borderWidth: 1,
+    borderRadius: 8, padding: spacing.sm, marginBottom: spacing.md,
+  },
+  infoCardText: { color: colors.fgMuted, fontSize: typography.sizeSm, lineHeight: 18 },
   card: {
     backgroundColor: colors.bgSubtle, borderColor: colors.border, borderWidth: 1,
     borderRadius: 10, padding: spacing.md, marginBottom: spacing.sm,
@@ -278,4 +375,9 @@ const styles = StyleSheet.create({
   openButtonText: { color: colors.accent, fontSize: typography.sizeSm, fontWeight: '600' },
   disabledText: { color: colors.fgSubtle },
   deleteText: { color: colors.danger, fontSize: typography.sizeSm, fontWeight: '600' },
+  autoRestartRow: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    marginTop: spacing.sm, paddingTop: spacing.sm, borderTopColor: colors.borderMuted, borderTopWidth: 1,
+  },
+  autoRestartLabel: { color: colors.fgMuted, fontSize: typography.sizeSm, flex: 1, marginRight: spacing.sm },
 });

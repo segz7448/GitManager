@@ -16,13 +16,29 @@ import {
 import * as Clipboard from 'expo-clipboard';
 import { getTermuxStatus, startBackgroundCommand, pollJob, killJob, cleanupJob } from '../services/termux';
 import { createSession, updateSession, listSessions, deleteSession } from '../db/terminalSessions';
+import AnsiText from '../components/AnsiText';
+import TerminalKeyRow from '../components/TerminalKeyRow';
 import { colors, spacing, typography } from '../theme';
 
 const SETUP_COMMANDS = 'mkdir -p ~/.termux\necho "allow-external-apps=true" >> ~/.termux/termux.properties\ntermux-reload-settings';
 const POLL_INTERVAL_MS = 1500;
+const MAX_HISTORY = 100;
+
+// Termux's own palette is close to pure black with light gray text and a
+// green prompt - matching that look here, distinct from the rest of the
+// app's dark-blue GitHub-style theme, since this screen is meant to read
+// as "a real terminal", not "a themed panel".
+const TERMUX_BG = '#000000';
+const TERMUX_FG = '#d0d0d0';
+const TERMUX_GREEN = '#4caf50';
+const TERMUX_DIM = '#6a6a6a';
 
 function isAllowExternalAppsError(text) {
   return !!text && text.toLowerCase().includes('allow-external-apps');
+}
+
+function isWordChar(c) {
+  return !!c && /\S/.test(c);
 }
 
 export default function TerminalScreen() {
@@ -31,9 +47,18 @@ export default function TerminalScreen() {
   const [sessions, setSessions] = useState([]); // local tab list, mirrors terminal_sessions table
   const [activeJobId, setActiveJobId] = useState(null);
   const [command, setCommand] = useState('');
+  const [cursorPos, setCursorPos] = useState(0);
   const [starting, setStarting] = useState(false);
+  const [ctrlActive, setCtrlActive] = useState(false);
+  const [altActive, setAltActive] = useState(false);
+  const [scrollViewportHeight, setScrollViewportHeight] = useState(0);
   const scrollRef = useRef(null);
+  const inputRef = useRef(null);
   const pollTimersRef = useRef({}); // jobId -> interval handle
+  const scrollYRef = useRef(0);
+  const historyRef = useRef([]); // past submitted commands, most recent last
+  const historyIndexRef = useRef(-1); // -1 = not browsing history
+  const draftRef = useRef(''); // the in-progress command, saved while browsing history
 
   const checkStatus = async () => {
     setCheckingStatus(true);
@@ -53,11 +78,14 @@ export default function TerminalScreen() {
 
   // On mount, restore any sessions from previous app launches and resume
   // polling the ones that weren't finished yet - this is what makes
-  // sessions "persistent" across the app being closed and reopened.
+  // sessions "persistent" across the app being closed and reopened. Also
+  // seed command history from those past sessions, like a real shell's
+  // history surviving between terminal windows.
   useEffect(() => {
     listSessions().then((existing) => {
       setSessions(existing);
       if (existing.length > 0) setActiveJobId(existing[existing.length - 1].jobId);
+      historyRef.current = existing.map((s) => s.command).slice(-MAX_HISTORY);
       existing.forEach((s) => {
         if (s.status !== 'finished') startPolling(s.jobId);
       });
@@ -103,6 +131,10 @@ export default function TerminalScreen() {
     if (!cmd) return;
     setStarting(true);
     setCommand('');
+    setCursorPos(0);
+    historyRef.current = [...historyRef.current, cmd].slice(-MAX_HISTORY);
+    historyIndexRef.current = -1;
+    draftRef.current = '';
     try {
       const jobId = await createSession(cmd, cmd.length > 24 ? `${cmd.slice(0, 24)}…` : cmd);
       const newSession = {
@@ -167,6 +199,119 @@ export default function TerminalScreen() {
 
   const handleNewTab = () => {
     setActiveJobId(null);
+  };
+
+  // ---------- Special key row handlers ----------
+  // These act on the command line being composed, not a live keystream -
+  // see the comment in TerminalKeyRow.js for why, given how commands
+  // actually reach Termux from this app.
+
+  const setCommandAndCursor = (text, pos) => {
+    setCommand(text);
+    setCursorPos(pos);
+    // Re-focus so the on-screen keyboard doesn't dismiss when tapping a
+    // special key, and so the new cursor position is visibly active.
+    requestAnimationFrame(() => inputRef.current?.focus());
+  };
+
+  const handleEsc = () => {
+    setCommandAndCursor('', 0);
+  };
+
+  const handleTab = () => {
+    const next = command.slice(0, cursorPos) + '\t' + command.slice(cursorPos);
+    setCommandAndCursor(next, cursorPos + 1);
+  };
+
+  const handleHome = () => setCommandAndCursor(command, 0);
+  const handleEnd = () => setCommandAndCursor(command, command.length);
+
+  const jumpWordBoundary = (pos, direction) => {
+    let i = pos;
+    if (direction === 'left') {
+      while (i > 0 && !isWordChar(command[i - 1])) i--;
+      while (i > 0 && isWordChar(command[i - 1])) i--;
+    } else {
+      while (i < command.length && !isWordChar(command[i])) i++;
+      while (i < command.length && isWordChar(command[i])) i++;
+    }
+    return i;
+  };
+
+  const recallHistory = (direction) => {
+    const history = historyRef.current;
+    if (history.length === 0) return;
+
+    if (direction === 'up') {
+      if (historyIndexRef.current === -1) {
+        draftRef.current = command;
+        historyIndexRef.current = history.length - 1;
+      } else if (historyIndexRef.current > 0) {
+        historyIndexRef.current -= 1;
+      }
+      const recalled = history[historyIndexRef.current];
+      setCommandAndCursor(recalled, recalled.length);
+    } else {
+      if (historyIndexRef.current === -1) return;
+      historyIndexRef.current += 1;
+      if (historyIndexRef.current >= history.length) {
+        historyIndexRef.current = -1;
+        setCommandAndCursor(draftRef.current, draftRef.current.length);
+      } else {
+        const recalled = history[historyIndexRef.current];
+        setCommandAndCursor(recalled, recalled.length);
+      }
+    }
+  };
+
+  const handleArrow = (direction) => {
+    if (direction === 'up' || direction === 'down') {
+      recallHistory(direction);
+      return;
+    }
+    if (direction === 'left') {
+      const next = altActive ? jumpWordBoundary(cursorPos, 'left') : Math.max(0, cursorPos - 1);
+      setCursorPos(next);
+      setAltActive(false);
+    } else {
+      const next = altActive ? jumpWordBoundary(cursorPos, 'right') : Math.min(command.length, cursorPos + 1);
+      setCursorPos(next);
+      setAltActive(false);
+    }
+    requestAnimationFrame(() => inputRef.current?.focus());
+  };
+
+  const handlePageUp = () => {
+    const target = Math.max(0, scrollYRef.current - scrollViewportHeight * 0.8);
+    scrollRef.current?.scrollTo({ y: target, animated: true });
+  };
+
+  const handlePageDown = () => {
+    const target = scrollYRef.current + scrollViewportHeight * 0.8;
+    scrollRef.current?.scrollTo({ y: target, animated: true });
+  };
+
+  const handleToggleCtrl = () => {
+    // CTRL is sticky: the next relevant key press consumes it. Right now
+    // the only wired combo is Ctrl+C (stop the running command) - typed
+    // straight into the input, "c"/"C" while CTRL is active triggers stop
+    // instead of inserting the letter.
+    setCtrlActive((v) => !v);
+  };
+
+  const handleToggleAlt = () => setAltActive((v) => !v);
+
+  const handleChangeText = (text) => {
+    if (ctrlActive && text.length === command.length + 1) {
+      const inserted = text[cursorPos] || text.slice(-1);
+      if (inserted && inserted.toLowerCase() === 'c') {
+        setCtrlActive(false);
+        handleKillActive();
+        return; // don't insert the "c" itself
+      }
+    }
+    setCommand(text);
+    historyIndexRef.current = -1;
   };
 
   if (checkingStatus) {
@@ -270,6 +415,9 @@ export default function TerminalScreen() {
         style={styles.terminal}
         contentContainerStyle={{ padding: spacing.md }}
         onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: false })}
+        onLayout={(e) => setScrollViewportHeight(e.nativeEvent.layout.height)}
+        onScroll={(e) => { scrollYRef.current = e.nativeEvent.contentOffset.y; }}
+        scrollEventThrottle={32}
       >
         {!activeSession ? (
           <Text style={styles.hintText}>
@@ -297,11 +445,15 @@ export default function TerminalScreen() {
           </View>
         ) : (
           <View>
-            <Text style={styles.promptLine}>$ {activeSession.command}</Text>
+            <Text style={styles.promptLine}>
+              <Text style={styles.promptTilde}>~ </Text>
+              <Text style={styles.promptDollar}>$ </Text>
+              {activeSession.command}
+            </Text>
             {(activeSession.status === 'starting' || activeSession.status === 'running') && (
-              <ActivityIndicator style={{ marginTop: spacing.xs, alignSelf: 'flex-start' }} color={colors.accent} size="small" />
+              <ActivityIndicator style={{ marginTop: spacing.xs, alignSelf: 'flex-start' }} color={TERMUX_GREEN} size="small" />
             )}
-            <Text style={styles.stdoutLine}>{activeSession.lastLog || ''}</Text>
+            <AnsiText style={styles.stdoutLine} dimColor={TERMUX_DIM}>{activeSession.lastLog || ''}</AnsiText>
             {activeSession.status === 'finished' && (
               <Text style={styles.exitLine}>
                 exit {activeSession.exitCode ?? 'unknown'}
@@ -311,6 +463,20 @@ export default function TerminalScreen() {
         )}
       </ScrollView>
 
+      <TerminalKeyRow
+        ctrlActive={ctrlActive}
+        altActive={altActive}
+        onToggleCtrl={handleToggleCtrl}
+        onToggleAlt={handleToggleAlt}
+        onEsc={handleEsc}
+        onTab={handleTab}
+        onArrow={handleArrow}
+        onHome={handleHome}
+        onEnd={handleEnd}
+        onPageUp={handlePageUp}
+        onPageDown={handlePageDown}
+      />
+
       <View style={styles.inputBar}>
         {activeSession && activeSession.status === 'running' && (
           <TouchableOpacity onPress={handleKillActive} style={styles.stopButton}>
@@ -319,15 +485,19 @@ export default function TerminalScreen() {
         )}
         <Text style={styles.promptSymbol}>$</Text>
         <TextInput
+          ref={inputRef}
           style={styles.input}
           placeholder="git -C ~/myrepo push"
-          placeholderTextColor={colors.fgSubtle}
+          placeholderTextColor={TERMUX_DIM}
           value={command}
-          onChangeText={setCommand}
+          onChangeText={handleChangeText}
+          selection={{ start: cursorPos, end: cursorPos }}
+          onSelectionChange={(e) => setCursorPos(e.nativeEvent.selection.start)}
           autoCapitalize="none"
           autoCorrect={false}
           onSubmitEditing={handleRun}
           editable={!starting}
+          cursorColor={TERMUX_GREEN}
         />
         <TouchableOpacity onPress={handleRun} disabled={starting || !command.trim()} style={styles.runButton}>
           {starting ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.runButtonText}>Run</Text>}
@@ -338,7 +508,7 @@ export default function TerminalScreen() {
 }
 
 const styles = StyleSheet.create({
-  flex: { flex: 1, backgroundColor: colors.bgInset },
+  flex: { flex: 1, backgroundColor: TERMUX_BG },
   centerContainer: { flex: 1, backgroundColor: colors.bgDefault, alignItems: 'center', justifyContent: 'center', padding: spacing.xl },
   setupTitle: { color: colors.fgDefault, fontSize: typography.sizeLg, fontWeight: '700', marginBottom: spacing.md },
   setupText: { color: colors.fgMuted, fontSize: typography.sizeSm, lineHeight: 20, textAlign: 'left' },
@@ -355,35 +525,37 @@ const styles = StyleSheet.create({
   setupCalloutText: { color: colors.fgMuted, fontSize: typography.sizeSm, marginTop: 4, marginBottom: spacing.xs },
   setupButtonText: { color: '#fff', fontWeight: '600' },
   retryText: { color: colors.accent, fontSize: typography.sizeSm },
-  tabsRow: { maxHeight: 44, borderBottomColor: colors.border, borderBottomWidth: 1, backgroundColor: colors.bgSubtle },
+  tabsRow: { maxHeight: 44, borderBottomColor: '#2a2a2a', borderBottomWidth: 1, backgroundColor: TERMUX_BG },
   tab: {
     flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.sm, marginVertical: spacing.xs,
     marginRight: spacing.xs, borderRadius: 6, maxWidth: 140,
   },
-  tabActive: { backgroundColor: colors.bgInset },
+  tabActive: { backgroundColor: '#1a1a1a' },
   tabDot: { width: 6, height: 6, borderRadius: 3, marginRight: spacing.xs },
-  tabDotStarting: { backgroundColor: colors.fgSubtle },
+  tabDotStarting: { backgroundColor: TERMUX_DIM },
   tabDotRunning: { backgroundColor: colors.warning },
-  tabDotSuccess: { backgroundColor: colors.success },
+  tabDotSuccess: { backgroundColor: TERMUX_GREEN },
   tabDotError: { backgroundColor: colors.danger },
-  tabText: { color: colors.fgMuted, fontSize: 12, fontFamily: typography.mono },
-  tabTextActive: { color: colors.fgDefault, fontWeight: '700' },
+  tabText: { color: TERMUX_DIM, fontSize: 12, fontFamily: typography.mono },
+  tabTextActive: { color: TERMUX_FG, fontWeight: '700' },
   newTabButton: { justifyContent: 'center', paddingHorizontal: spacing.sm },
-  newTabButtonText: { color: colors.accent, fontWeight: '600', fontSize: 12 },
+  newTabButtonText: { color: TERMUX_GREEN, fontWeight: '600', fontSize: 12 },
   terminal: { flex: 1 },
-  hintText: { color: colors.fgSubtle, fontSize: typography.sizeSm, fontFamily: typography.mono, lineHeight: 18 },
-  promptLine: { color: colors.accent, fontFamily: typography.mono, fontSize: 13, fontWeight: '700' },
-  stdoutLine: { color: '#c9d1d9', fontFamily: typography.mono, fontSize: 12, marginTop: 2, lineHeight: 16 },
-  exitLine: { color: colors.fgSubtle, fontFamily: typography.mono, fontSize: 11, marginTop: 4 },
+  hintText: { color: TERMUX_DIM, fontSize: typography.sizeSm, fontFamily: typography.mono, lineHeight: 18 },
+  promptLine: { fontFamily: typography.mono, fontSize: 13, fontWeight: '700', color: TERMUX_FG },
+  promptTilde: { color: '#66bfff' },
+  promptDollar: { color: TERMUX_GREEN },
+  stdoutLine: { fontFamily: typography.mono, fontSize: 12, marginTop: 2, lineHeight: 16, color: TERMUX_FG },
+  exitLine: { color: TERMUX_DIM, fontFamily: typography.mono, fontSize: 11, marginTop: 4 },
   inputBar: {
     flexDirection: 'row', alignItems: 'center', padding: spacing.sm,
-    borderTopColor: colors.border, borderTopWidth: 1, backgroundColor: colors.bgSubtle,
+    borderTopColor: '#2a2a2a', borderTopWidth: 1, backgroundColor: TERMUX_BG,
   },
   stopButton: { backgroundColor: colors.danger, borderRadius: 6, paddingHorizontal: spacing.sm, paddingVertical: spacing.xs, marginRight: spacing.sm },
   stopButtonText: { color: '#fff', fontWeight: '600', fontSize: 11 },
-  promptSymbol: { color: colors.accent, fontFamily: typography.mono, fontWeight: '700', marginRight: spacing.sm },
+  promptSymbol: { color: TERMUX_GREEN, fontFamily: typography.mono, fontWeight: '700', marginRight: spacing.sm },
   input: {
-    flex: 1, color: colors.fgDefault, fontFamily: typography.mono, fontSize: 13,
+    flex: 1, color: TERMUX_FG, fontFamily: typography.mono, fontSize: 13,
     paddingVertical: spacing.sm,
   },
   runButton: { backgroundColor: colors.successEmphasis, borderRadius: 6, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, marginLeft: spacing.sm },
