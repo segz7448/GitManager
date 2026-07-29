@@ -1,4 +1,5 @@
 import * as SecureStore from 'expo-secure-store';
+import * as FileSystem from 'expo-file-system/legacy';
 import { encode as btoa, decode as atob } from 'base-64';
 import { captureRateLimitHeaders } from './rateLimitTracker';
 
@@ -953,46 +954,67 @@ export async function deleteRelease(owner, repo, releaseId) {
 }
 
 /**
- * Uploads a binary asset (e.g. an APK) to a release. Note the upload host
- * is uploads.github.com, not api.github.com - GitHub's release object
- * provides the exact upload_url template to use, so we parse the repo
- * path out of it rather than hardcoding the uploads host ourselves.
+ * Uploads a binary asset (e.g. an APK, a model file) to a release. Note
+ * the upload host is uploads.github.com, not api.github.com - GitHub's
+ * release object provides the exact upload_url template to use, so we
+ * parse the repo path out of it rather than hardcoding the uploads host
+ * ourselves.
+ *
+ * Takes a local file URI and streams it directly from disk to the
+ * network via FileSystem.createUploadTask - deliberately NOT reading the
+ * file into a JS string/base64 first. For anything beyond a few tens of
+ * MB (model weights routinely being hundreds of MB to a couple GB),
+ * reading a file fully into memory as base64 (which inflates size by
+ * ~33%) and then decoding it back to bytes can exceed a phone's
+ * available JS heap and crash with an OutOfMemoryError - streaming from
+ * disk has no such ceiling, it's bounded by disk space and network, not
+ * JS memory.
+ *
+ * `onProgress`, if provided, is called with { totalBytesSent,
+ * totalBytesExpectedToSend } as the upload proceeds - the only way to
+ * show real progress for something this size instead of an indefinite
+ * spinner the user has to just trust.
  */
-export async function uploadReleaseAsset(uploadUrlTemplate, fileName, contentType, base64Data) {
+export async function uploadReleaseAsset(uploadUrlTemplate, fileName, contentType, fileUri, onProgress) {
   const token = await getToken();
   if (!token) throw new GitHubError('No GitHub token configured', 401, null);
 
-  // upload_url looks like: https://uploads.github.com/repos/o/r/releases/123/assets{?name,label}
   const uploadUrl = uploadUrlTemplate.replace('{?name,label}', `?name=${encodeURIComponent(fileName)}`);
 
-  const binaryString = decodeBase64Utf8Raw(base64Data);
-  const bytes = new Uint8Array(binaryString.length);
-  for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
-
-  const res = await fetch(uploadUrl, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': contentType,
-      Accept: 'application/vnd.github+json',
+  const task = FileSystem.createUploadTask(
+    uploadUrl,
+    fileUri,
+    {
+      httpMethod: 'POST',
+      uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': contentType,
+        Accept: 'application/vnd.github+json',
+      },
     },
-    body: bytes,
-  });
+    onProgress
+  );
 
-  if (!res.ok) {
-    let data = null;
-    try { data = await res.json(); } catch (e) {}
-    throw new GitHubError((data && data.message) || `Upload failed: ${res.status}`, res.status, data);
+  const result = await task.uploadAsync();
+  if (!result) {
+    throw new GitHubError('Upload was cancelled or produced no response', 0, null);
   }
-  return res.json();
+
+  if (result.status < 200 || result.status >= 300) {
+    let data = null;
+    try { data = JSON.parse(result.body); } catch (e) {}
+    throw new GitHubError((data && data.message) || `Upload failed: ${result.status}`, result.status, data);
+  }
+  try {
+    return JSON.parse(result.body);
+  } catch (e) {
+    return result;
+  }
 }
 
 export async function deleteReleaseAsset(owner, repo, assetId) {
   return request(`/repos/${owner}/${repo}/releases/assets/${assetId}`, { method: 'DELETE' });
-}
-
-function decodeBase64Utf8Raw(b64) {
-  return atob(b64);
 }
 
 // ---------- Actions secrets & variables ----------

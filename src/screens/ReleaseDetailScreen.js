@@ -25,7 +25,8 @@ function formatBytes(bytes) {
   if (!bytes) return '0 B';
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
 function guessMimeType(fileName) {
@@ -48,6 +49,7 @@ export default function ReleaseDetailScreen({ route, navigation }) {
   const [downloadingId, setDownloadingId] = useState(null);
   const [downloadProgress, setDownloadProgress] = useState('');
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
 
   navigation.setOptions({ title: 'Release' });
 
@@ -119,17 +121,42 @@ export default function ReleaseDetailScreen({ route, navigation }) {
       if (result.canceled) return;
       const asset = result.assets[0];
 
+      // GitHub hard-blocks any single release asset over 2GB (2 GiB) -
+      // check up front rather than letting a multi-hundred-MB upload run
+      // for a while only to fail at the very end.
+      const RELEASE_ASSET_HARD_LIMIT = 2 * 1024 * 1024 * 1024;
+      if (asset.size && asset.size > RELEASE_ASSET_HARD_LIMIT) {
+        Alert.alert(
+          'File too large',
+          `"${asset.name}" is ${(asset.size / (1024 * 1024 * 1024)).toFixed(2)}GB. GitHub caps a single release asset at 2GB - split the file or host it elsewhere and link to it instead.`
+        );
+        return;
+      }
+
       setUploading(true);
-      const base64 = await FileSystem.readAsStringAsync(asset.uri, {
-        encoding: FileSystem.EncodingType.Base64,
-      });
-      await uploadReleaseAsset(release.upload_url, asset.name, guessMimeType(asset.name), base64);
+      setUploadProgress(0);
+      // uploadReleaseAsset streams the file straight from disk rather
+      // than reading it into memory first, which is what keeps large
+      // files (model weights, archives, etc.) from blowing up the JS
+      // heap the way a full base64 read would.
+      await uploadReleaseAsset(
+        release.upload_url,
+        asset.name,
+        guessMimeType(asset.name),
+        asset.uri,
+        ({ totalBytesSent, totalBytesExpectedToSend }) => {
+          if (totalBytesExpectedToSend > 0) {
+            setUploadProgress(Math.round((totalBytesSent / totalBytesExpectedToSend) * 100));
+          }
+        }
+      );
       load();
       Alert.alert('Uploaded', `${asset.name} was attached to this release.`);
     } catch (e) {
       Alert.alert('Upload failed', e.message);
     } finally {
       setUploading(false);
+      setUploadProgress(0);
     }
   };
 
@@ -198,7 +225,10 @@ export default function ReleaseDetailScreen({ route, navigation }) {
         <Text style={styles.sectionLabel}>Assets ({release.assets.length})</Text>
         <TouchableOpacity onPress={handleUploadAsset} disabled={uploading}>
           {uploading ? (
-            <ActivityIndicator size="small" color={colors.accent} />
+            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+              <ActivityIndicator size="small" color={colors.accent} />
+              <Text style={[styles.addLink, { marginLeft: spacing.xs }]}>{uploadProgress}%</Text>
+            </View>
           ) : (
             <Text style={styles.addLink}>+ Upload</Text>
           )}

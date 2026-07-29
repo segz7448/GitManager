@@ -48,6 +48,7 @@ import CodeSearchScreen from './src/screens/CodeSearchScreen';
 import TerminalScreen from './src/screens/TerminalScreen';
 import CodespacesScreen from './src/screens/CodespacesScreen';
 import CodespaceWebViewScreen from './src/screens/CodespaceWebViewScreen';
+import CreateCodespaceScreen from './src/screens/CreateCodespaceScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import ProfileScreen from './src/screens/ProfileScreen';
 import IssuesScreen from './src/screens/IssuesScreen';
@@ -149,14 +150,22 @@ function MainTabs() {
       <Tab.Screen
         name="Codespaces"
         component={CodespacesScreen}
-        options={{
+        options={({ navigation }) => ({
           tabBarLabel: 'Codespaces',
           headerShown: true,
           headerStyle: { backgroundColor: colors.bgSubtle },
           headerTintColor: colors.fgDefault,
           headerTitle: 'Codespaces',
           headerLeft: () => <HamburgerButton />,
-        }}
+          headerRight: () => (
+            <TouchableOpacity
+              onPress={() => navigation.navigate('CreateCodespace')}
+              style={{ marginRight: 16 }}
+            >
+              <Text style={{ color: colors.accent, fontSize: 22, fontWeight: '700' }}>+</Text>
+            </TouchableOpacity>
+          ),
+        })}
       />
       <Tab.Screen
         name="Settings"
@@ -253,6 +262,11 @@ function AuthenticatedApp() {
           name="CodespaceWebView"
           component={CodespaceWebViewScreen}
           options={{ title: 'Codespace' }}
+        />
+        <RootStack.Screen
+          name="CreateCodespace"
+          component={CreateCodespaceScreen}
+          options={{ title: 'New Codespace' }}
         />
       </RootStack.Navigator>
       <SidebarMenu />

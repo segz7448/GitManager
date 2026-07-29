@@ -234,21 +234,30 @@ export default function CodespacesScreen({ navigation }) {
           contentContainerStyle={{ padding: spacing.md }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />}
           ListHeaderComponent={
-            codespaces.length > 0 ? (
-              <View style={styles.infoCard}>
-                <Text style={styles.infoCardText}>
-                  "Auto-restart" checks periodically while GitManager is open and starts a
-                  codespace back up if GitHub has stopped it for being idle. It can't stop the
-                  idle timeout from happening in the first place - only real activity inside the
-                  codespace does that - it just shortens how long it stays stopped.
-                </Text>
-              </View>
-            ) : null
+            <View>
+              <TouchableOpacity
+                style={styles.createButton}
+                onPress={() => navigation.navigate('CreateCodespace')}
+              >
+                <Text style={styles.createButtonText}>+ Create Codespace</Text>
+              </TouchableOpacity>
+              {codespaces.length > 0 && (
+                <View style={styles.infoCard}>
+                  <Text style={styles.infoCardText}>
+                    "Auto-restart" checks periodically while GitManager is open and starts a
+                    codespace back up if GitHub has stopped it for being idle. It can't stop the
+                    idle timeout from happening in the first place - only real activity inside the
+                    codespace does that - it just shortens how long it stays stopped.
+                  </Text>
+                </View>
+              )}
+            </View>
           }
           ListEmptyComponent={
             <View style={styles.centerBox}>
               <Text style={styles.emptyText}>
-                No codespaces yet. Create one from a repository's Git Tools menu.
+                No codespaces yet. Tap "+ Create Codespace" above to make one from any of your
+                repositories.
               </Text>
             </View>
           }
@@ -348,6 +357,11 @@ const styles = StyleSheet.create({
   retryButton: { marginTop: spacing.md, padding: spacing.sm },
   retryText: { color: colors.accent },
   emptyText: { color: colors.fgSubtle, textAlign: 'center', lineHeight: 20 },
+  createButton: {
+    backgroundColor: colors.accentEmphasis, borderRadius: 10, paddingVertical: spacing.md,
+    alignItems: 'center', marginBottom: spacing.md,
+  },
+  createButtonText: { color: '#fff', fontWeight: '700', fontSize: typography.sizeMd },
   infoCard: {
     backgroundColor: 'rgba(88,166,255,0.08)', borderColor: colors.accent, borderWidth: 1,
     borderRadius: 8, padding: spacing.sm, marginBottom: spacing.md,
