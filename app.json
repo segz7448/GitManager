@@ -9,7 +9,13 @@
     "scheme": "gitmanager",
     "plugins": [
       "@actualwave/react-native-codeditor",
-      "expo-notifications",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/notification-icon.png",
+          "color": "#1f6feb"
+        }
+      ],
       "@react-native-firebase/app",
       "@react-native-firebase/messaging",
       "./plugins/withReleaseSigning.js",
@@ -23,7 +29,6 @@
         "backgroundColor": "#000000"
       },
       "softwareKeyboardLayoutMode": "resize",
-      "edgeToEdgeEnabled": true,
       "googleServicesFile": "./google-services.json",
       "permissions": ["POST_NOTIFICATIONS"]
     },

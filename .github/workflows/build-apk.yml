@@ -29,6 +29,19 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      - name: Check Expo package versions match SDK
+        # This is the check that would have caught the expo-font, expo-haptics,
+        # expo-linear-gradient, expo-navigation-bar, expo-status-bar, and
+        # expo-image version mismatches before they ever reached a device.
+        # Expo modules must match the installed Expo SDK's major version
+        # (SDK 57 -> expo-*@57.x) - a mismatched module compiles fine but
+        # throws NoSuchMethodError/NoClassDefFoundError against
+        # expo-modules-core at runtime, on the very first launch, with no
+        # JS-level error boundary able to catch it. `--fix` auto-corrects
+        # package.json instead of just warning, so a stale pin like this
+        # can't silently sit in the repo again.
+        run: npx expo install --fix
+
       - name: Write google-services.json
         env:
           GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}

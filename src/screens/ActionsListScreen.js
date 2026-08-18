@@ -1,13 +1,8 @@
 import React, { useState, useCallback, useEffect } from 'react';
-import { View, Text, FlatList, StyleSheet, ActivityIndicator, RefreshControl, Alert } from 'react-native';
+import { View, Text, FlatList, StyleSheet, ActivityIndicator, RefreshControl } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { listWorkflowRuns } from '../services/github';
-import {
-  requestNotificationPermission,
-  isRepoWatched,
-  addRepoToWatchlist,
-  removeRepoFromWatchlist,
-} from '../services/notifications';
+import { isRepoWatched, addRepoToWatchlist } from '../services/notifications';
 import { colors, spacing, typography, statusColors } from '../theme';
 import { Screen, Card, Button, IconButton, EmptyState } from '../components/ui';
 
@@ -20,60 +15,43 @@ export default function ActionsListScreen({ route, navigation }) {
   const [error, setError] = useState(null);
   const [page, setPage] = useState(1);
   const [hasNextPage, setHasNextPage] = useState(false);
-  const [autoNotify, setAutoNotify] = useState(false);
 
+  // Automatic mode: every repo you open Actions for gets watched silently,
+  // no toggle, no icon, no prompt beyond Android's own one-time permission
+  // dialog (handled globally by the FCM auto-enable in App.js). Mirrors the
+  // "no manual notification controls anywhere" decision applied app-wide.
   useEffect(() => {
-    isRepoWatched(owner, repo).then(setAutoNotify);
+    let cancelled = false;
+    (async () => {
+      try {
+        const alreadyWatched = await isRepoWatched(owner, repo);
+        if (alreadyWatched || cancelled) return;
+        let lastSeenRunId = 0;
+        try {
+          const { data } = await listWorkflowRuns(owner, repo, { perPage: 1 });
+          if (data.workflow_runs?.[0]) lastSeenRunId = data.workflow_runs[0].id;
+        } catch (e) {
+          // fine to proceed with 0 - worst case one extra notification
+        }
+        if (!cancelled) await addRepoToWatchlist(owner, repo, lastSeenRunId);
+      } catch (e) {
+        console.error('[notifications] auto-watch failed for', repo, e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [owner, repo]);
-
-  const handleToggleAutoNotify = async () => {
-    if (autoNotify) {
-      await removeRepoFromWatchlist(owner, repo);
-      setAutoNotify(false);
-      return;
-    }
-    const granted = await requestNotificationPermission();
-    if (!granted) {
-      Alert.alert(
-        'Notifications disabled',
-        'Enable notifications for GitManager in Android Settings to use this.'
-      );
-      return;
-    }
-    let lastSeenRunId = 0;
-    try {
-      const { data } = await listWorkflowRuns(owner, repo, { perPage: 1 });
-      if (data.workflow_runs?.[0]) lastSeenRunId = data.workflow_runs[0].id;
-    } catch (e) {
-      // fine to proceed with 0 - worst case one extra notification
-    }
-    await addRepoToWatchlist(owner, repo, lastSeenRunId);
-    setAutoNotify(true);
-    Alert.alert(
-      'Auto-notify enabled',
-      'You\'ll get a notification whenever any Actions run in this repo finishes. Background ' +
-        'checks happen roughly every 15+ minutes (an Android platform limit) - keep the app ' +
-        'backgrounded rather than force-closed for this to work.'
-    );
-  };
 
   navigation.setOptions({
     title: `Actions · ${repo}`,
     headerRight: () => (
-      <View style={styles.headerRight}>
-        <IconButton
-          name={autoNotify ? 'notifications' : 'notifications-outline'}
-          color={autoNotify ? colors.success : colors.fgMuted}
-          onPress={handleToggleAutoNotify}
-          size={20}
-        />
-        <IconButton
-          name="play-circle-outline"
-          color={colors.accent}
-          onPress={() => navigation.navigate('WorkflowDispatch', { owner, repo })}
-          size={22}
-        />
-      </View>
+      <IconButton
+        name="play-circle-outline"
+        color={colors.accent}
+        onPress={() => navigation.navigate('WorkflowDispatch', { owner, repo })}
+        size={22}
+      />
     ),
   });
 
