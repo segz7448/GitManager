@@ -216,15 +216,22 @@ function AuthenticatedApp() {
     // the app's control). If it was already enabled in a previous session,
     // just re-attach the foreground/token-refresh listeners on cold start;
     // otherwise register for the first time silently in the background.
-    isPushEnabled().then((enabled) => {
-      if (enabled) {
-        initFcmListeners();
-      } else {
-        enablePushNotifications().catch((e) => {
-          console.error('[FCM] automatic enable failed:', e);
-        });
-      }
-    });
+    isPushEnabled()
+      .then((enabled) => {
+        if (enabled) {
+          initFcmListeners();
+        } else {
+          enablePushNotifications().catch((e) => {
+            console.error('[FCM] automatic enable failed:', e);
+          });
+        }
+      })
+      .catch((e) => {
+        // Same SecureStore/Keystore failure mode as AuthContext - don't
+        // let a bad read here take the app down, push notifications just
+        // won't be enabled automatically this session.
+        console.error('[FCM] isPushEnabled failed:', e);
+      });
   }, []);
 
   React.useEffect(() => {
@@ -252,7 +259,9 @@ function AuthenticatedApp() {
       }
     };
 
-    Linking.getInitialURL().then(handleUrl);
+    Linking.getInitialURL().then(handleUrl).catch((e) => {
+      console.error('[linking] getInitialURL failed:', e);
+    });
     const subscription = Linking.addEventListener('url', (event) => handleUrl(event.url));
     return () => subscription.remove();
   }, []);

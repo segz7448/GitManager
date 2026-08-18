@@ -11,11 +11,31 @@ export function AuthProvider({ children }) {
 
   useEffect(() => {
     (async () => {
-      const t = await getToken();
-      const u = await getCachedUsername();
-      setToken(t);
-      setUsername(u);
-      setLoading(false);
+      // getToken()/getCachedUsername() read from expo-secure-store, which
+      // is backed by the Android Keystore. On some devices (Xiaomi/MIUI in
+      // particular) the Keystore key backing that encrypted storage can
+      // get invalidated outside the app's control - after a security
+      // patch, a lock-screen/biometric change, or MIUI's own background
+      // "optimization" - and SecureStore.getItemAsync then throws instead
+      // of resolving to null. Since this runs at the very top of the
+      // component tree before anything has rendered, an uncaught throw
+      // here previously took the whole app down on every single launch,
+      // with no way to recover short of a full uninstall/reinstall (wiping
+      // the corrupt Keystore entry). Treat any failure here the same as
+      // "not logged in" - worst case the person just has to log in again,
+      // instead of the app being permanently unlaunchable.
+      try {
+        const t = await getToken();
+        const u = await getCachedUsername();
+        setToken(t);
+        setUsername(u);
+      } catch (e) {
+        console.error('[auth] failed to read stored session, treating as logged out:', e);
+        setToken(null);
+        setUsername(null);
+      } finally {
+        setLoading(false);
+      }
     })();
   }, []);
 
