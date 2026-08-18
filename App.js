@@ -7,14 +7,14 @@ import { NavigationContainer, DarkTheme } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { isPushEnabled, initFcmListeners } from './src/services/fcm';
+import { isPushEnabled, initFcmListeners, enablePushNotifications } from './src/services/fcm';
 
 import { AuthProvider, useAuth } from './src/context/AuthContext';
 import { SidebarProvider, useSidebar } from './src/context/SidebarContext';
 import { StagingProvider } from './src/context/StagingContext';
 import SidebarMenu from './src/components/SidebarMenu';
 import RecoveryBanner from './src/components/RecoveryBanner';
-import { navigationRef } from './src/navigation';
+import { navigationRef, navigate } from './src/navigation';
 import { ensureBackgroundTaskRegistered } from './src/backgroundTasks';
 import { initDatabase } from './src/db/database';
 import { colors } from './src/theme';
@@ -37,6 +37,7 @@ import IssueDetailScreen from './src/screens/IssueDetailScreen';
 import RepoGitHubScreen from './src/screens/RepoGitHubScreen';
 import SecurityScreen from './src/screens/SecurityScreen';
 import ErrorBoundary from './src/components/ErrorBoundary';
+import GlassSplash from './src/components/GlassSplash';
 import ZipUploadScreen from './src/screens/ZipUploadScreen';
 import ActionsListScreen from './src/screens/ActionsListScreen';
 import PullRequestListScreen from './src/screens/PullRequestListScreen';
@@ -209,10 +210,20 @@ function AuthenticatedApp() {
   }, []);
 
   React.useEffect(() => {
-    // If push was already enabled in a previous session, re-attach the
-    // foreground/token-refresh listeners on cold start.
+    // Push notifications are fully automatic: no settings toggle, no
+    // per-session prompt shown by this app (Android still shows its own
+    // one-time system permission dialog the first time, which is outside
+    // the app's control). If it was already enabled in a previous session,
+    // just re-attach the foreground/token-refresh listeners on cold start;
+    // otherwise register for the first time silently in the background.
     isPushEnabled().then((enabled) => {
-      if (enabled) initFcmListeners();
+      if (enabled) {
+        initFcmListeners();
+      } else {
+        enablePushNotifications().catch((e) => {
+          console.error('[FCM] automatic enable failed:', e);
+        });
+      }
     });
   }, []);
 
@@ -297,7 +308,7 @@ function AuthenticatedApp() {
 function RootNavigator() {
   const { token, loading } = useAuth();
 
-  if (loading) return null; // could add a splash screen here
+  if (loading) return <GlassSplash />;
 
   return (
     <NavigationContainer ref={navigationRef} theme={navTheme}>
