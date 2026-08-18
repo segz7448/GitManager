@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "714925031335",
+    "project_id": "gitmanager-58da1",
+    "storage_bucket": "gitmanager-58da1.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:714925031335:android:db3100a387374bdab20082",
+        "android_client_info": {
+          "package_name": "com.zenas.gitmanager"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCk1row6tm4wtBcf-Q50xxvPwsDIYjxncY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

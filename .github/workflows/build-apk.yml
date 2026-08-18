@@ -60,6 +60,17 @@ jobs:
         # from app.json + installed config plugins. No Expo account,
         # token, or cloud service is contacted.
 
+      - name: Fix notification manifest merge conflict
+        # @react-native-firebase/messaging's bundled AndroidManifest.xml
+        # declares com.google.firebase.messaging.default_notification_color
+        # (and ...default_notification_icon) pointing at @color/white.
+        # expo-notifications' plugin declares the same keys pointing at our
+        # custom color/icon. Gradle treats two different values for the
+        # same manifest attribute as a hard error and refuses to build -
+        # this was the actual cause of the build never producing an APK.
+        # See scripts/fix-notification-manifest.js for the full story.
+        run: node scripts/fix-notification-manifest.js
+
       - name: Decode release keystore
         if: env.HAS_RELEASE_KEYSTORE == 'true'
         env:
