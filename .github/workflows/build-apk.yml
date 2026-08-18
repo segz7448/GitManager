@@ -57,6 +57,24 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x android/gradlew
 
+      - name: Build debug APK
+        working-directory: android
+        # Debug build first, and deliberately not gated behind the release
+        # keystore check - this is unsigned-for-debug (uses the auto
+        # generated debug.keystore) and unminified, so if the app crashes
+        # this is what actually shows a real stack trace via
+        # `adb logcat` (or the red screen / native crash dialog on-device)
+        # instead of the obfuscated, hard-to-read output a release build
+        # would give you.
+        run: ./gradlew assembleDebug --stacktrace
+
+      - name: Upload debug APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitmanager-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 30
+
       - name: Build release APK
         working-directory: android
         env:
@@ -66,7 +84,7 @@ jobs:
           RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
         run: ./gradlew assembleRelease --stacktrace
 
-      - name: Upload APK artifact
+      - name: Upload release APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: gitmanager-release-apk
