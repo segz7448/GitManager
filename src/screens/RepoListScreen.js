@@ -3,8 +3,6 @@ import {
   View,
   Text,
   FlatList,
-  TextInput,
-  TouchableOpacity,
   StyleSheet,
   ActivityIndicator,
   RefreshControl,
@@ -12,9 +10,11 @@ import {
   Modal,
   ScrollView,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { listRepos, createRepo, listGitignoreTemplates, listLicenseTemplates } from '../services/github';
 import { useAuth } from '../context/AuthContext';
-import { colors, spacing, typography } from '../theme';
+import { colors, spacing, typography, radii } from '../theme';
+import { Screen, Card, Input, Button, IconButton, Badge, EmptyState } from '../components/ui';
 
 export default function RepoListScreen({ navigation }) {
   const { username, logout } = useAuth();
@@ -136,53 +136,57 @@ export default function RepoListScreen({ navigation }) {
   };
 
   const renderRepo = ({ item }) => (
-    <TouchableOpacity
+    <Card
       style={styles.repoCard}
       onPress={() => navigation.navigate('RepoDetail', { owner: item.owner.login, repo: item.name })}
     >
       <View style={styles.repoHeader}>
         <Text style={styles.repoName} numberOfLines={1}>{item.name}</Text>
-        <View style={[styles.badge, item.private ? styles.badgePrivate : styles.badgePublic]}>
-          <Text style={styles.badgeText}>{item.private ? 'Private' : 'Public'}</Text>
-        </View>
+        <Badge label={item.private ? 'Private' : 'Public'} tone={item.private ? 'warning' : 'success'} small />
       </View>
       {!!item.description && (
         <Text style={styles.repoDesc} numberOfLines={2}>{item.description}</Text>
       )}
       <View style={styles.repoMeta}>
-        {!!item.language && <Text style={styles.metaText}>● {item.language}</Text>}
-        <Text style={styles.metaText}>★ {item.stargazers_count}</Text>
-        <Text style={styles.metaText}>Updated {timeAgo(item.updated_at)}</Text>
+        {!!item.language && (
+          <View style={styles.metaItem}>
+            <View style={styles.langDot} />
+            <Text style={styles.metaText}>{item.language}</Text>
+          </View>
+        )}
+        <View style={styles.metaItem}>
+          <Ionicons name="star-outline" size={12} color={colors.fgSubtle} />
+          <Text style={styles.metaText}>{item.stargazers_count}</Text>
+        </View>
+        <View style={styles.metaItem}>
+          <Ionicons name="time-outline" size={12} color={colors.fgSubtle} />
+          <Text style={styles.metaText}>{timeAgo(item.updated_at)}</Text>
+        </View>
       </View>
-    </TouchableOpacity>
+    </Card>
   );
 
   return (
-    <View style={styles.container}>
+    <Screen>
       <View style={styles.topBar}>
-        <TextInput
-          style={styles.searchInput}
+        <Input
+          icon="search-outline"
           placeholder="Search repos..."
-          placeholderTextColor={colors.fgSubtle}
           value={search}
           onChangeText={setSearch}
+          style={styles.searchInput}
         />
-        <TouchableOpacity style={styles.newButton} onPress={() => navigation.navigate('CodeSearch')}>
-          <Text style={styles.newButtonText}>🔍 Code</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.newButton} onPress={openCreateModal}>
-          <Text style={styles.newButtonText}>+ New</Text>
-        </TouchableOpacity>
+        <IconButton name="code-slash-outline" variant="subtle" onPress={() => navigation.navigate('CodeSearch')} />
+        <IconButton name="add" variant="subtle" color={colors.accent} onPress={openCreateModal} />
       </View>
 
       {loading ? (
         <ActivityIndicator style={{ marginTop: spacing.xl }} color={colors.accent} />
       ) : error ? (
         <View style={styles.centerBox}>
+          <Ionicons name="cloud-offline-outline" size={28} color={colors.danger} />
           <Text style={styles.errorText}>{error}</Text>
-          <TouchableOpacity onPress={load} style={styles.retryButton}>
-            <Text style={styles.retryText}>Retry</Text>
-          </TouchableOpacity>
+          <Button title="Retry" onPress={load} variant="secondary" size="sm" style={{ marginTop: spacing.md }} />
         </View>
       ) : (
         <FlatList
@@ -197,7 +201,7 @@ export default function RepoListScreen({ navigation }) {
             loadingMore ? <ActivityIndicator style={{ marginVertical: spacing.md }} color={colors.accent} /> : null
           }
           ListEmptyComponent={
-            <Text style={styles.emptyText}>No repositories found.</Text>
+            <EmptyState icon="folder-open-outline" title="No repositories found" subtitle="Try a different search, or create a new one." />
           }
         />
       )}
@@ -206,79 +210,93 @@ export default function RepoListScreen({ navigation }) {
         <View style={styles.modalOverlay}>
           <View style={styles.modalCard}>
             <ScrollView showsVerticalScrollIndicator={false}>
-              <Text style={styles.modalTitle}>New Repository</Text>
-              <TextInput
-                style={styles.modalInput}
+              <View style={styles.modalHandle} />
+              <Text style={styles.modalTitle}>New repository</Text>
+              <Input
                 placeholder="repo-name"
-                placeholderTextColor={colors.fgSubtle}
                 value={newRepoName}
                 onChangeText={setNewRepoName}
                 autoCapitalize="none"
-              />
-              <TextInput
+                mono
                 style={styles.modalInput}
+              />
+              <Input
                 placeholder="Description (optional)"
-                placeholderTextColor={colors.fgSubtle}
                 value={newRepoDesc}
                 onChangeText={setNewRepoDesc}
+                style={styles.modalInput}
               />
 
-              <TouchableOpacity
-                style={styles.toggleRow}
+              <Card
+                level="none"
+                inset
                 onPress={() => setNewRepoPrivate(!newRepoPrivate)}
-              >
-                <View style={[styles.checkbox, newRepoPrivate && styles.checkboxChecked]} />
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.toggleLabel}>Private repository</Text>
-                  <Text style={styles.toggleSubtext}>
-                    {newRepoPrivate ? 'Only you choose who can see this.' : 'Anyone on the internet can see this repository.'}
-                  </Text>
-                </View>
-              </TouchableOpacity>
-
-              <TouchableOpacity
                 style={styles.toggleRow}
-                onPress={() => setNewRepoReadme(!newRepoReadme)}
               >
-                <View style={[styles.checkbox, newRepoReadme && styles.checkboxChecked]} />
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.toggleLabel}>Add a README</Text>
-                  <Text style={styles.toggleSubtext}>Can be used for longer descriptions.</Text>
+                <View style={styles.toggleContent}>
+                  <View style={[styles.checkbox, newRepoPrivate && styles.checkboxChecked]}>
+                    {newRepoPrivate && <Ionicons name="checkmark" size={14} color="#fff" />}
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.toggleLabel}>Private repository</Text>
+                    <Text style={styles.toggleSubtext}>
+                      {newRepoPrivate ? 'Only you choose who can see this.' : 'Anyone on the internet can see this repository.'}
+                    </Text>
+                  </View>
                 </View>
-              </TouchableOpacity>
+              </Card>
 
-              <TouchableOpacity style={styles.pickerRow} onPress={() => setPickerModal('gitignore')}>
+              <Card
+                level="none"
+                inset
+                onPress={() => setNewRepoReadme(!newRepoReadme)}
+                style={styles.toggleRow}
+              >
+                <View style={styles.toggleContent}>
+                  <View style={[styles.checkbox, newRepoReadme && styles.checkboxChecked]}>
+                    {newRepoReadme && <Ionicons name="checkmark" size={14} color="#fff" />}
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.toggleLabel}>Add a README</Text>
+                    <Text style={styles.toggleSubtext}>Can be used for longer descriptions.</Text>
+                  </View>
+                </View>
+              </Card>
+
+              <Card level="none" inset onPress={() => setPickerModal('gitignore')} style={styles.pickerRow}>
                 <Text style={styles.toggleLabel}>Add .gitignore</Text>
-                <Text style={styles.pickerValue}>{gitignoreTemplate || 'None'} ›</Text>
-              </TouchableOpacity>
+                <View style={styles.pickerValueRow}>
+                  <Text style={styles.pickerValue}>{gitignoreTemplate || 'None'}</Text>
+                  <Ionicons name="chevron-forward" size={16} color={colors.fgSubtle} />
+                </View>
+              </Card>
 
-              <TouchableOpacity style={styles.pickerRow} onPress={() => setPickerModal('license')}>
+              <Card level="none" inset onPress={() => setPickerModal('license')} style={styles.pickerRow}>
                 <Text style={styles.toggleLabel}>Add a license</Text>
-                <Text style={styles.pickerValue}>
-                  {licenseTemplate
-                    ? licenseOptions.find((l) => l.key === licenseTemplate)?.name || licenseTemplate
-                    : 'None'} ›
-                </Text>
-              </TouchableOpacity>
+                <View style={styles.pickerValueRow}>
+                  <Text style={styles.pickerValue}>
+                    {licenseTemplate
+                      ? licenseOptions.find((l) => l.key === licenseTemplate)?.name || licenseTemplate
+                      : 'None'}
+                  </Text>
+                  <Ionicons name="chevron-forward" size={16} color={colors.fgSubtle} />
+                </View>
+              </Card>
 
               <View style={styles.modalActions}>
-                <TouchableOpacity
-                  style={styles.modalCancelButton}
+                <Button
+                  title="Cancel"
+                  variant="secondary"
                   onPress={() => setCreateModalVisible(false)}
-                >
-                  <Text style={styles.modalCancelText}>Cancel</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={styles.modalCreateButton}
+                  style={styles.modalActionButton}
+                />
+                <Button
+                  title="Create"
                   onPress={handleCreate}
-                  disabled={creating}
-                >
-                  {creating ? (
-                    <ActivityIndicator color="#fff" />
-                  ) : (
-                    <Text style={styles.modalCreateText}>Create</Text>
-                  )}
-                </TouchableOpacity>
+                  loading={creating}
+                  icon="add-circle-outline"
+                  style={styles.modalActionButton}
+                />
               </View>
             </ScrollView>
           </View>
@@ -288,27 +306,25 @@ export default function RepoListScreen({ navigation }) {
       <Modal visible={pickerModal === 'gitignore'} animationType="slide" transparent>
         <View style={styles.modalOverlay}>
           <View style={styles.pickerCard}>
+            <View style={styles.modalHandle} />
             <Text style={styles.modalTitle}>.gitignore template</Text>
             <ScrollView style={{ maxHeight: 400 }}>
-              <TouchableOpacity
-                style={styles.pickerOption}
-                onPress={() => { setGitignoreTemplate(null); setPickerModal(null); }}
-              >
+              <Card level="none" inset onPress={() => { setGitignoreTemplate(null); setPickerModal(null); }} style={styles.pickerOption}>
                 <Text style={styles.pickerOptionText}>None</Text>
-              </TouchableOpacity>
+              </Card>
               {gitignoreOptions.map((name) => (
-                <TouchableOpacity
+                <Card
                   key={name}
-                  style={styles.pickerOption}
+                  level="none"
+                  inset
                   onPress={() => { setGitignoreTemplate(name); setPickerModal(null); }}
+                  style={styles.pickerOption}
                 >
                   <Text style={styles.pickerOptionText}>{name}</Text>
-                </TouchableOpacity>
+                </Card>
               ))}
             </ScrollView>
-            <TouchableOpacity style={styles.modalCancelButton} onPress={() => setPickerModal(null)}>
-              <Text style={styles.modalCancelText}>Close</Text>
-            </TouchableOpacity>
+            <Button title="Close" variant="secondary" onPress={() => setPickerModal(null)} style={{ marginTop: spacing.md }} />
           </View>
         </View>
       </Modal>
@@ -316,31 +332,29 @@ export default function RepoListScreen({ navigation }) {
       <Modal visible={pickerModal === 'license'} animationType="slide" transparent>
         <View style={styles.modalOverlay}>
           <View style={styles.pickerCard}>
+            <View style={styles.modalHandle} />
             <Text style={styles.modalTitle}>License</Text>
             <ScrollView style={{ maxHeight: 400 }}>
-              <TouchableOpacity
-                style={styles.pickerOption}
-                onPress={() => { setLicenseTemplate(null); setPickerModal(null); }}
-              >
+              <Card level="none" inset onPress={() => { setLicenseTemplate(null); setPickerModal(null); }} style={styles.pickerOption}>
                 <Text style={styles.pickerOptionText}>None</Text>
-              </TouchableOpacity>
+              </Card>
               {licenseOptions.map((license) => (
-                <TouchableOpacity
+                <Card
                   key={license.key}
-                  style={styles.pickerOption}
+                  level="none"
+                  inset
                   onPress={() => { setLicenseTemplate(license.key); setPickerModal(null); }}
+                  style={styles.pickerOption}
                 >
                   <Text style={styles.pickerOptionText}>{license.name}</Text>
-                </TouchableOpacity>
+                </Card>
               ))}
             </ScrollView>
-            <TouchableOpacity style={styles.modalCancelButton} onPress={() => setPickerModal(null)}>
-              <Text style={styles.modalCancelText}>Close</Text>
-            </TouchableOpacity>
+            <Button title="Close" variant="secondary" onPress={() => setPickerModal(null)} style={{ marginTop: spacing.md }} />
           </View>
         </View>
       </Modal>
-    </View>
+    </Screen>
   );
 }
 
@@ -356,95 +370,79 @@ function timeAgo(dateStr) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.bgDefault },
   topBar: {
     flexDirection: 'row',
     padding: spacing.md,
     gap: spacing.sm,
     borderBottomColor: colors.border,
     borderBottomWidth: 1,
+    alignItems: 'center',
   },
-  searchInput: {
-    flex: 1,
-    backgroundColor: colors.bgSubtle,
-    borderColor: colors.border,
-    borderWidth: 1,
-    borderRadius: 8,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    color: colors.fgDefault,
-  },
-  newButton: {
-    backgroundColor: colors.successEmphasis,
-    borderRadius: 8,
-    paddingHorizontal: spacing.md,
-    justifyContent: 'center',
-  },
-  newButtonText: { color: '#fff', fontWeight: '600' },
-  repoCard: {
-    backgroundColor: colors.bgSubtle,
-    borderColor: colors.border,
-    borderWidth: 1,
-    borderRadius: 10,
-    padding: spacing.md,
-    marginBottom: spacing.sm,
-  },
+  searchInput: { flex: 1 },
+  repoCard: { marginBottom: spacing.sm },
   repoHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  repoName: { color: colors.accent, fontSize: typography.sizeLg, fontWeight: '600', flex: 1 },
-  badge: { paddingHorizontal: spacing.sm, paddingVertical: 2, borderRadius: 20, marginLeft: spacing.sm },
-  badgePrivate: { backgroundColor: '#3d2b02' },
-  badgePublic: { backgroundColor: '#0d2818' },
-  badgeText: { color: colors.fgMuted, fontSize: typography.sizeSm },
+  repoName: { color: colors.accent, fontSize: typography.sizeLg, fontWeight: '700', flex: 1 },
   repoDesc: { color: colors.fgMuted, marginTop: spacing.xs, fontSize: typography.sizeSm },
   repoMeta: { flexDirection: 'row', gap: spacing.md, marginTop: spacing.sm },
+  metaItem: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  langDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.accent },
   metaText: { color: colors.fgSubtle, fontSize: typography.sizeSm },
   centerBox: { alignItems: 'center', marginTop: spacing.xl },
-  errorText: { color: colors.danger, textAlign: 'center', paddingHorizontal: spacing.xl },
-  retryButton: { marginTop: spacing.md, padding: spacing.sm },
-  retryText: { color: colors.accent },
-  emptyText: { color: colors.fgSubtle, textAlign: 'center', marginTop: spacing.xl },
+  errorText: { color: colors.danger, textAlign: 'center', paddingHorizontal: spacing.xl, marginTop: spacing.sm },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
   modalCard: {
     backgroundColor: colors.bgSubtle,
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
+    borderTopLeftRadius: radii.xl,
+    borderTopRightRadius: radii.xl,
     padding: spacing.lg,
     borderColor: colors.border,
     borderWidth: 1,
     maxHeight: '85%',
   },
-  modalTitle: { color: colors.fgDefault, fontSize: typography.sizeLg, fontWeight: '700', marginBottom: spacing.md },
-  modalInput: {
-    backgroundColor: colors.bgInset,
-    borderColor: colors.border,
-    borderWidth: 1,
-    borderRadius: 8,
-    color: colors.fgDefault,
-    padding: spacing.md,
-    marginBottom: spacing.sm,
+  modalHandle: {
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: colors.border,
+    alignSelf: 'center',
+    marginBottom: spacing.md,
   },
-  toggleRow: { flexDirection: 'row', alignItems: 'center', marginVertical: spacing.sm },
+  modalTitle: { color: colors.fgDefault, fontSize: typography.sizeLg, fontWeight: '700', marginBottom: spacing.md },
+  modalInput: { marginBottom: spacing.md },
+  toggleRow: { marginBottom: spacing.md },
+  toggleContent: { flexDirection: 'row', alignItems: 'center' },
   checkbox: {
-    width: 20, height: 20, borderRadius: 4,
-    borderColor: colors.border, borderWidth: 1.5, marginRight: spacing.sm,
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    borderWidth: 1.5,
+    borderColor: colors.border,
+    marginRight: spacing.md,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   checkboxChecked: { backgroundColor: colors.accentEmphasis, borderColor: colors.accentEmphasis },
-  toggleLabel: { color: colors.fgDefault },
+  toggleLabel: { color: colors.fgDefault, fontWeight: '600', fontSize: typography.sizeMd },
   toggleSubtext: { color: colors.fgSubtle, fontSize: typography.sizeSm, marginTop: 2 },
   pickerRow: {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    paddingVertical: spacing.md, borderTopColor: colors.borderMuted, borderTopWidth: 1,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: spacing.md,
   },
-  pickerValue: { color: colors.accent, fontSize: typography.sizeSm },
+  pickerValueRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  pickerValue: { color: colors.fgMuted, fontSize: typography.sizeSm },
+  modalActions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm, marginBottom: spacing.md },
+  modalActionButton: { flex: 1 },
   pickerCard: {
-    backgroundColor: colors.bgSubtle, borderTopLeftRadius: 16, borderTopRightRadius: 16,
-    padding: spacing.lg, borderColor: colors.border, borderWidth: 1, maxHeight: '70%',
+    backgroundColor: colors.bgSubtle,
+    borderTopLeftRadius: radii.xl,
+    borderTopRightRadius: radii.xl,
+    padding: spacing.lg,
+    borderColor: colors.border,
+    borderWidth: 1,
+    maxHeight: '70%',
   },
-  pickerOption: { paddingVertical: spacing.md, borderBottomColor: colors.borderMuted, borderBottomWidth: 1 },
-  pickerOptionText: { color: colors.fgDefault },
-  modalActions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md },
-  modalCancelButton: { flex: 1, padding: spacing.md, alignItems: 'center', borderRadius: 8, borderColor: colors.border, borderWidth: 1 },
-  modalCancelText: { color: colors.fgMuted },
-  modalCreateButton: { flex: 1, padding: spacing.md, alignItems: 'center', borderRadius: 8, backgroundColor: colors.successEmphasis },
-  modalCreateText: { color: '#fff', fontWeight: '600' },
+  pickerOption: { marginBottom: spacing.sm },
+  pickerOptionText: { color: colors.fgDefault, fontSize: typography.sizeMd },
 });

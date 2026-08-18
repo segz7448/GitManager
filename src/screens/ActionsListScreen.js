@@ -1,14 +1,6 @@
 import React, { useState, useCallback, useEffect } from 'react';
-import {
-  View,
-  Text,
-  FlatList,
-  TouchableOpacity,
-  StyleSheet,
-  ActivityIndicator,
-  RefreshControl,
-  Alert,
-} from 'react-native';
+import { View, Text, FlatList, StyleSheet, ActivityIndicator, RefreshControl, Alert } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { listWorkflowRuns } from '../services/github';
 import {
   requestNotificationPermission,
@@ -17,6 +9,7 @@ import {
   removeRepoFromWatchlist,
 } from '../services/notifications';
 import { colors, spacing, typography, statusColors } from '../theme';
+import { Screen, Card, Button, IconButton, EmptyState } from '../components/ui';
 
 export default function ActionsListScreen({ route, navigation }) {
   const { owner, repo } = route.params;
@@ -47,9 +40,6 @@ export default function ActionsListScreen({ route, navigation }) {
       );
       return;
     }
-    // Seed lastSeenRunId to the current latest run so turning this on
-    // doesn't immediately fire a notification for something that already
-    // finished before you started watching.
     let lastSeenRunId = 0;
     try {
       const { data } = await listWorkflowRuns(owner, repo, { perPage: 1 });
@@ -70,15 +60,19 @@ export default function ActionsListScreen({ route, navigation }) {
   navigation.setOptions({
     title: `Actions · ${repo}`,
     headerRight: () => (
-      <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-        <TouchableOpacity onPress={handleToggleAutoNotify} style={{ marginRight: spacing.md }}>
-          <Text style={{ color: autoNotify ? colors.success : colors.fgMuted, fontWeight: '600' }}>
-            {autoNotify ? '🔔 Auto' : '🔕 Auto'}
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity onPress={() => navigation.navigate('WorkflowDispatch', { owner, repo })} style={{ marginRight: spacing.sm }}>
-          <Text style={{ color: colors.accent, fontWeight: '600' }}>Run ▶</Text>
-        </TouchableOpacity>
+      <View style={styles.headerRight}>
+        <IconButton
+          name={autoNotify ? 'notifications' : 'notifications-outline'}
+          color={autoNotify ? colors.success : colors.fgMuted}
+          onPress={handleToggleAutoNotify}
+          size={20}
+        />
+        <IconButton
+          name="play-circle-outline"
+          color={colors.accent}
+          onPress={() => navigation.navigate('WorkflowDispatch', { owner, repo })}
+          size={22}
+        />
       </View>
     ),
   });
@@ -131,13 +125,21 @@ export default function ActionsListScreen({ route, navigation }) {
   const renderRun = ({ item }) => {
     const status = item.status === 'completed' ? item.conclusion : item.status;
     const dotColor = statusColors[status] || colors.fgMuted;
+    const icon =
+      status === 'success' || status === 'completed'
+        ? 'checkmark-circle'
+        : status === 'failure'
+        ? 'close-circle'
+        : status === 'in_progress' || status === 'queued'
+        ? 'time'
+        : 'ellipse';
 
     return (
-      <TouchableOpacity
+      <Card
         style={styles.runCard}
         onPress={() => navigation.navigate('RunDetail', { owner, repo, runId: item.id, runName: item.name })}
       >
-        <View style={[styles.statusDot, { backgroundColor: dotColor }]} />
+        <Ionicons name={icon} size={22} color={dotColor} style={styles.statusIcon} />
         <View style={styles.runInfo}>
           <Text style={styles.runName} numberOfLines={1}>{item.display_title || item.name}</Text>
           <Text style={styles.runMeta}>
@@ -145,20 +147,20 @@ export default function ActionsListScreen({ route, navigation }) {
           </Text>
           <Text style={styles.runTime}>{timeAgo(item.created_at)}</Text>
         </View>
-      </TouchableOpacity>
+        <Ionicons name="chevron-forward" size={16} color={colors.fgSubtle} />
+      </Card>
     );
   };
 
   return (
-    <View style={styles.container}>
+    <Screen>
       {loading ? (
         <ActivityIndicator style={{ marginTop: spacing.xl }} color={colors.accent} />
       ) : error ? (
         <View style={styles.centerBox}>
+          <Ionicons name="cloud-offline-outline" size={28} color={colors.danger} />
           <Text style={styles.errorText}>{error}</Text>
-          <TouchableOpacity onPress={load} style={styles.retryButton}>
-            <Text style={styles.retryText}>Retry</Text>
-          </TouchableOpacity>
+          <Button title="Retry" onPress={load} variant="secondary" size="sm" style={{ marginTop: spacing.md }} />
         </View>
       ) : (
         <FlatList
@@ -172,10 +174,12 @@ export default function ActionsListScreen({ route, navigation }) {
           ListFooterComponent={
             loadingMore ? <ActivityIndicator style={{ marginVertical: spacing.md }} color={colors.accent} /> : null
           }
-          ListEmptyComponent={<Text style={styles.emptyText}>No workflow runs yet.</Text>}
+          ListEmptyComponent={
+            <EmptyState icon="play-outline" title="No workflow runs yet" subtitle="Trigger a workflow to see it appear here." />
+          }
         />
       )}
-    </View>
+    </Screen>
   );
 }
 
@@ -195,25 +199,13 @@ function timeAgo(dateStr) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.bgDefault },
-  runCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: colors.bgSubtle,
-    borderColor: colors.border,
-    borderWidth: 1,
-    borderRadius: 10,
-    padding: spacing.md,
-    marginBottom: spacing.sm,
-  },
-  statusDot: { width: 10, height: 10, borderRadius: 5, marginRight: spacing.md },
+  headerRight: { flexDirection: 'row', alignItems: 'center' },
+  runCard: { flexDirection: 'row', alignItems: 'center', marginBottom: spacing.sm },
+  statusIcon: { marginRight: spacing.md },
   runInfo: { flex: 1 },
   runName: { color: colors.fgDefault, fontSize: typography.sizeMd, fontWeight: '600' },
   runMeta: { color: colors.fgMuted, fontSize: typography.sizeSm, marginTop: 2 },
   runTime: { color: colors.fgSubtle, fontSize: typography.sizeSm, marginTop: 2 },
   centerBox: { alignItems: 'center', marginTop: spacing.xl },
-  errorText: { color: colors.danger, textAlign: 'center', paddingHorizontal: spacing.xl },
-  retryButton: { marginTop: spacing.md, padding: spacing.sm },
-  retryText: { color: colors.accent },
-  emptyText: { color: colors.fgSubtle, textAlign: 'center', marginTop: spacing.xl },
+  errorText: { color: colors.danger, textAlign: 'center', paddingHorizontal: spacing.xl, marginTop: spacing.sm },
 });

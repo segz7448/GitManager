@@ -1,10 +1,13 @@
 import 'react-native-gesture-handler';
 import React from 'react';
-import { StatusBar, TouchableOpacity, Text, Linking } from 'react-native';
+import { TouchableOpacity, Text, Linking, Platform } from 'react-native';
+import { StatusBar } from 'expo-status-bar';
+import * as NavigationBar from 'expo-navigation-bar';
 import { NavigationContainer, DarkTheme } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { isPushEnabled, initFcmListeners } from './src/services/fcm';
 
 import { AuthProvider, useAuth } from './src/context/AuthContext';
 import { SidebarProvider, useSidebar } from './src/context/SidebarContext';
@@ -199,6 +202,21 @@ function AuthenticatedApp() {
   }, []);
 
   React.useEffect(() => {
+    if (Platform.OS === 'android') {
+      NavigationBar.setBackgroundColorAsync(colors.bgDefault).catch(() => {});
+      NavigationBar.setButtonStyleAsync('light').catch(() => {});
+    }
+  }, []);
+
+  React.useEffect(() => {
+    // If push was already enabled in a previous session, re-attach the
+    // foreground/token-refresh listeners on cold start.
+    isPushEnabled().then((enabled) => {
+      if (enabled) initFcmListeners();
+    });
+  }, []);
+
+  React.useEffect(() => {
     const handleUrl = (url) => {
       if (!url || !url.startsWith('gitmanager://')) return;
       // Manual parse instead of the URL API - polyfill behavior for
@@ -298,7 +316,7 @@ export default function App() {
   return (
     <ErrorBoundary>
       <SafeAreaProvider>
-        <StatusBar barStyle="light-content" backgroundColor={colors.bgDefault} />
+        <StatusBar style="light" backgroundColor={colors.bgDefault} />
         <AuthProvider>
           <RootNavigator />
         </AuthProvider>

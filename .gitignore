@@ -8,3 +8,4 @@ ios/
 release.keystore
 *.jks
 .env
+google-services.json

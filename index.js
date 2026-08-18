@@ -5,6 +5,12 @@ import App from './App';
 // still fire when the app is backgrounded, not just while a screen using
 // it is mounted.
 import './src/backgroundTasks';
+import { registerBackgroundHandler } from './src/services/fcm';
+
+// Must run at module top level, outside any component, so the FCM
+// background/quit-state handler is registered before the JS engine could
+// otherwise be torn down between pushes.
+registerBackgroundHandler();
 
 // registerRootComponent calls AppRegistry.registerComponent under the hood
 // and correctly handles both native app launch and expo-dev-client if used.

@@ -10,6 +10,8 @@
     "plugins": [
       "@actualwave/react-native-codeditor",
       "expo-notifications",
+      "@react-native-firebase/app",
+      "@react-native-firebase/messaging",
       "./plugins/withReleaseSigning.js",
       "./plugins/withTermuxIntegration.js",
       "./plugins/withRepoActionsWidget.js"
@@ -21,7 +23,9 @@
         "backgroundColor": "#0d1117"
       },
       "softwareKeyboardLayoutMode": "resize",
-      "permissions": []
+      "edgeToEdgeEnabled": true,
+      "googleServicesFile": "./google-services.json",
+      "permissions": ["POST_NOTIFICATIONS"]
     },
     "extra": {
       "eas": {

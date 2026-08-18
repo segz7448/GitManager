@@ -36,6 +36,51 @@ export const spacing = {
   xl: 24,
 };
 
+export const radii = {
+  sm: 6,
+  md: 10,
+  lg: 14,
+  xl: 20,
+  pill: 999,
+};
+
+// Gradient pairs used across the UI kit (LinearGradient `colors` prop).
+// Kept close to the base palette so they read as depth, not decoration.
+export const gradients = {
+  accent: ['#1f6feb', '#58a6ff'],
+  success: ['#238636', '#3fb950'],
+  danger: ['#8e1519', '#f85149'],
+  surface: ['#161b22', '#0d1117'],
+  header: ['#161b22e6', '#0d1117f2'],
+  sheen: ['#ffffff14', '#ffffff00'],
+};
+
+// Elevation presets (RN shadow + Android elevation combined).
+export const elevation = {
+  none: {},
+  sm: {
+    shadowColor: '#000',
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 2,
+  },
+  md: {
+    shadowColor: '#000',
+    shadowOpacity: 0.32,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 6,
+  },
+  lg: {
+    shadowColor: '#000',
+    shadowOpacity: 0.4,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 12,
+  },
+};
+
 export const statusColors = {
   success: colors.success,
   failure: colors.danger,

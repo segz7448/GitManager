@@ -1,24 +1,34 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
-  View,
   Text,
-  TextInput,
-  TouchableOpacity,
   StyleSheet,
-  ActivityIndicator,
   Alert,
   Linking,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
+  Animated,
+  View,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useAuth } from '../context/AuthContext';
-import { colors, spacing, typography } from '../theme';
+import { colors, spacing, typography, radii, gradients } from '../theme';
+import { Screen, Card, Input, Button } from '../components/ui';
 
 export default function LoginScreen() {
   const { login } = useAuth();
   const [token, setToken] = useState('');
   const [loading, setLoading] = useState(false);
+  const fade = useRef(new Animated.Value(0)).current;
+  const rise = useRef(new Animated.Value(16)).current;
+
+  useEffect(() => {
+    Animated.parallel([
+      Animated.timing(fade, { toValue: 1, duration: 420, useNativeDriver: true }),
+      Animated.spring(rise, { toValue: 0, friction: 8, tension: 60, useNativeDriver: true }),
+    ]).start();
+  }, [fade, rise]);
 
   const handleLogin = async () => {
     const trimmed = token.trim();
@@ -37,120 +47,94 @@ export default function LoginScreen() {
   };
 
   return (
-    <KeyboardAvoidingView
-      style={styles.flex}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-    >
-      <ScrollView contentContainerStyle={styles.container}>
-        <Text style={styles.title}>GitManager</Text>
-        <Text style={styles.subtitle}>Personal GitHub control panel</Text>
+    <Screen>
+      <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
+          <Animated.View style={{ opacity: fade, transform: [{ translateY: rise }] }}>
+            <View style={styles.brandRow}>
+              <LinearGradient colors={gradients.accent} style={styles.logo}>
+                <Ionicons name="git-branch" size={30} color="#fff" />
+              </LinearGradient>
+              <Text style={styles.title}>GitManager</Text>
+              <Text style={styles.subtitle}>Your personal GitHub control panel</Text>
+            </View>
 
-        <View style={styles.card}>
-          <Text style={styles.label}>Personal Access Token</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
-            placeholderTextColor={colors.fgSubtle}
-            value={token}
-            onChangeText={setToken}
-            autoCapitalize="none"
-            autoCorrect={false}
-            secureTextEntry
-          />
+            <Card level="lg" style={styles.card}>
+              <Text style={styles.label}>Personal access token</Text>
+              <Input
+                icon="key-outline"
+                placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
+                value={token}
+                onChangeText={setToken}
+                autoCapitalize="none"
+                autoCorrect={false}
+                secureTextEntry
+                mono
+                style={styles.input}
+              />
 
-          <TouchableOpacity
-            style={[styles.button, loading && styles.buttonDisabled]}
-            onPress={handleLogin}
-            disabled={loading}
-          >
-            {loading ? (
-              <ActivityIndicator color={colors.fgDefault} />
-            ) : (
-              <Text style={styles.buttonText}>Connect</Text>
-            )}
-          </TouchableOpacity>
+              <Button
+                title="Connect"
+                onPress={handleLogin}
+                loading={loading}
+                fullWidth
+                icon="arrow-forward-circle-outline"
+                iconPosition="right"
+                hapticStyle="success"
+                style={styles.connectButton}
+              />
 
-          <TouchableOpacity
-            onPress={() => Linking.openURL('https://github.com/settings/tokens?type=beta')}
-            style={styles.linkRow}
-          >
-            <Text style={styles.link}>Generate a fine-grained token →</Text>
-          </TouchableOpacity>
+              <Button
+                title="Generate a fine-grained token"
+                variant="ghost"
+                size="sm"
+                icon="open-outline"
+                iconPosition="right"
+                onPress={() => Linking.openURL('https://github.com/settings/tokens?type=beta')}
+                style={styles.linkButton}
+              />
 
-          <Text style={styles.hint}>
-            Required scopes: repo (full control), workflow, and read:user.{'\n'}
-            The token is stored only on this device using secure encrypted storage — never
-            transmitted anywhere except directly to api.github.com.
-          </Text>
-        </View>
-      </ScrollView>
-    </KeyboardAvoidingView>
+              <View style={styles.hintRow}>
+                <Ionicons name="shield-checkmark-outline" size={14} color={colors.fgSubtle} />
+                <Text style={styles.hint}>
+                  {' '}Required scopes: repo, workflow, read:user. Stored only on this device in
+                  encrypted storage - never transmitted anywhere except directly to api.github.com.
+                </Text>
+              </View>
+            </Card>
+          </Animated.View>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  flex: { flex: 1, backgroundColor: colors.bgDefault },
-  container: {
-    flexGrow: 1,
+  flex: { flex: 1 },
+  container: { flexGrow: 1, justifyContent: 'center', padding: spacing.xl },
+  brandRow: { alignItems: 'center', marginBottom: spacing.xl },
+  logo: {
+    width: 64,
+    height: 64,
+    borderRadius: radii.xl,
+    alignItems: 'center',
     justifyContent: 'center',
-    padding: spacing.xl,
+    marginBottom: spacing.md,
   },
-  title: {
-    color: colors.fgDefault,
-    fontSize: typography.sizeXxl,
-    fontWeight: '700',
-    textAlign: 'center',
-  },
-  subtitle: {
-    color: colors.fgMuted,
-    fontSize: typography.sizeMd,
-    textAlign: 'center',
-    marginTop: spacing.xs,
-    marginBottom: spacing.xl,
-  },
-  card: {
-    backgroundColor: colors.bgSubtle,
-    borderColor: colors.border,
-    borderWidth: 1,
-    borderRadius: 12,
-    padding: spacing.lg,
-  },
+  title: { color: colors.fgDefault, fontSize: typography.sizeXxl, fontWeight: '800', letterSpacing: -0.5 },
+  subtitle: { color: colors.fgMuted, fontSize: typography.sizeMd, marginTop: spacing.xs },
+  card: { marginTop: spacing.sm },
   label: {
     color: colors.fgMuted,
     fontSize: typography.sizeSm,
-    marginBottom: spacing.xs,
+    marginBottom: spacing.sm,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
-  },
-  input: {
-    backgroundColor: colors.bgInset,
-    borderColor: colors.border,
-    borderWidth: 1,
-    borderRadius: 8,
-    color: colors.fgDefault,
-    fontFamily: typography.mono,
-    padding: spacing.md,
-    fontSize: typography.sizeMd,
-    marginBottom: spacing.lg,
-  },
-  button: {
-    backgroundColor: colors.successEmphasis,
-    borderRadius: 8,
-    paddingVertical: spacing.md,
-    alignItems: 'center',
-  },
-  buttonDisabled: { opacity: 0.6 },
-  buttonText: {
-    color: '#fff',
     fontWeight: '600',
-    fontSize: typography.sizeMd,
   },
-  linkRow: { marginTop: spacing.lg, alignItems: 'center' },
-  link: { color: colors.accent, fontSize: typography.sizeSm },
-  hint: {
-    color: colors.fgSubtle,
-    fontSize: typography.sizeSm,
-    marginTop: spacing.lg,
-    lineHeight: 18,
-  },
+  input: { marginBottom: spacing.lg },
+  connectButton: { marginTop: spacing.xs },
+  linkButton: { alignSelf: 'center', marginTop: spacing.md },
+  hintRow: { flexDirection: 'row', marginTop: spacing.lg, alignItems: 'flex-start' },
+  hint: { color: colors.fgSubtle, fontSize: typography.sizeSm, lineHeight: 18, flex: 1 },
 });

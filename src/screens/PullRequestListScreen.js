@@ -1,15 +1,12 @@
 import React, { useState, useCallback, useEffect } from 'react';
-import {
-  View,
-  Text,
-  FlatList,
-  TouchableOpacity,
-  StyleSheet,
-  ActivityIndicator,
-  RefreshControl,
-} from 'react-native';
+import { View, Text, FlatList, StyleSheet, ActivityIndicator, RefreshControl, Pressable } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { listPullRequests } from '../services/github';
-import { colors, spacing, typography } from '../theme';
+import { colors, spacing, typography, radii } from '../theme';
+import { Screen, Card, Button, IconButton, EmptyState } from '../components/ui';
+import { haptic } from '../utils/haptics';
+
+const FILTERS = ['open', 'closed', 'all'];
 
 export default function PullRequestListScreen({ route, navigation }) {
   const { owner, repo } = route.params;
@@ -22,12 +19,12 @@ export default function PullRequestListScreen({ route, navigation }) {
   navigation.setOptions({
     title: `Pull Requests · ${repo}`,
     headerRight: () => (
-      <TouchableOpacity
+      <IconButton
+        name="add-circle-outline"
+        color={colors.accent}
+        size={22}
         onPress={() => navigation.navigate('CreatePullRequest', { owner, repo })}
-        style={{ marginRight: spacing.sm }}
-      >
-        <Text style={{ color: colors.accent, fontWeight: '600' }}>+ New</Text>
-      </TouchableOpacity>
+      />
     ),
   });
 
@@ -60,29 +57,34 @@ export default function PullRequestListScreen({ route, navigation }) {
   };
 
   return (
-    <View style={styles.container}>
+    <Screen>
       <View style={styles.filterBar}>
-        {['open', 'closed', 'all'].map((s) => (
-          <TouchableOpacity
-            key={s}
-            style={[styles.filterChip, state === s && styles.filterChipActive]}
-            onPress={() => setState(s)}
-          >
-            <Text style={[styles.filterChipText, state === s && styles.filterChipTextActive]}>
-              {s.charAt(0).toUpperCase() + s.slice(1)}
-            </Text>
-          </TouchableOpacity>
-        ))}
+        {FILTERS.map((s) => {
+          const active = state === s;
+          return (
+            <Pressable
+              key={s}
+              style={[styles.filterChip, active && styles.filterChipActive]}
+              onPress={() => {
+                haptic.select();
+                setState(s);
+              }}
+            >
+              <Text style={[styles.filterChipText, active && styles.filterChipTextActive]}>
+                {s.charAt(0).toUpperCase() + s.slice(1)}
+              </Text>
+            </Pressable>
+          );
+        })}
       </View>
 
       {loading ? (
         <ActivityIndicator style={{ marginTop: spacing.xl }} color={colors.accent} />
       ) : error ? (
         <View style={styles.centerBox}>
+          <Ionicons name="cloud-offline-outline" size={28} color={colors.danger} />
           <Text style={styles.errorText}>{error}</Text>
-          <TouchableOpacity onPress={load} style={styles.retryButton}>
-            <Text style={styles.retryText}>Retry</Text>
-          </TouchableOpacity>
+          <Button title="Retry" onPress={load} variant="secondary" size="sm" style={{ marginTop: spacing.md }} />
         </View>
       ) : (
         <FlatList
@@ -90,51 +92,51 @@ export default function PullRequestListScreen({ route, navigation }) {
           keyExtractor={(item) => String(item.id)}
           contentContainerStyle={{ padding: spacing.md }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />}
-          ListEmptyComponent={<Text style={styles.emptyText}>No {state} pull requests.</Text>}
-          renderItem={({ item }) => (
-            <TouchableOpacity
-              style={styles.prCard}
-              onPress={() => navigation.navigate('PullRequestDetail', { owner, repo, pullNumber: item.number })}
-            >
-              <View style={styles.prHeaderRow}>
-                <View style={[styles.stateDot, item.draft ? styles.stateDotDraft : item.state === 'open' ? styles.stateDotOpen : styles.stateDotClosed]} />
-                <Text style={styles.prTitle} numberOfLines={2}>{item.title}</Text>
-              </View>
-              <Text style={styles.prMeta}>
-                #{item.number} opened by {item.user?.login} · {item.head.ref} → {item.base.ref}
-              </Text>
-            </TouchableOpacity>
-          )}
+          ListEmptyComponent={
+            <EmptyState icon="git-pull-request-outline" title={`No ${state} pull requests`} subtitle="Open one from the button up top." />
+          }
+          renderItem={({ item }) => {
+            const icon = item.draft ? 'git-pull-request-outline' : item.state === 'open' ? 'git-pull-request' : 'git-merge';
+            const tone = item.draft ? colors.fgMuted : item.state === 'open' ? colors.success : colors.done;
+            return (
+              <Card
+                style={styles.prCard}
+                onPress={() => navigation.navigate('PullRequestDetail', { owner, repo, pullNumber: item.number })}
+              >
+                <View style={styles.prHeaderRow}>
+                  <Ionicons name={icon} size={18} color={tone} style={styles.prIcon} />
+                  <Text style={styles.prTitle} numberOfLines={2}>{item.title}</Text>
+                </View>
+                <Text style={styles.prMeta}>
+                  #{item.number} opened by {item.user?.login} · {item.head.ref} → {item.base.ref}
+                </Text>
+              </Card>
+            );
+          }}
         />
       )}
-    </View>
+    </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.bgDefault },
   filterBar: { flexDirection: 'row', gap: spacing.sm, padding: spacing.md },
   filterChip: {
-    borderColor: colors.border, borderWidth: 1, borderRadius: 20,
-    paddingHorizontal: spacing.md, paddingVertical: spacing.xs,
+    borderColor: colors.border,
+    borderWidth: 1,
+    borderRadius: radii.pill,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs,
+    backgroundColor: colors.bgSubtle,
   },
   filterChipActive: { backgroundColor: colors.accentEmphasis, borderColor: colors.accentEmphasis },
-  filterChipText: { color: colors.fgMuted, fontSize: typography.sizeSm },
-  filterChipTextActive: { color: '#fff', fontWeight: '600' },
+  filterChipText: { color: colors.fgMuted, fontSize: typography.sizeSm, fontWeight: '600' },
+  filterChipTextActive: { color: '#fff' },
   centerBox: { alignItems: 'center', marginTop: spacing.xl },
-  errorText: { color: colors.danger, textAlign: 'center', paddingHorizontal: spacing.xl },
-  retryButton: { marginTop: spacing.md, padding: spacing.sm },
-  retryText: { color: colors.accent },
-  emptyText: { color: colors.fgSubtle, textAlign: 'center', marginTop: spacing.xl },
-  prCard: {
-    backgroundColor: colors.bgSubtle, borderColor: colors.border, borderWidth: 1,
-    borderRadius: 10, padding: spacing.md, marginBottom: spacing.sm,
-  },
-  prHeaderRow: { flexDirection: 'row', alignItems: 'center' },
-  stateDot: { width: 10, height: 10, borderRadius: 5, marginRight: spacing.sm },
-  stateDotOpen: { backgroundColor: colors.success },
-  stateDotClosed: { backgroundColor: colors.danger },
-  stateDotDraft: { backgroundColor: colors.fgMuted },
+  errorText: { color: colors.danger, textAlign: 'center', paddingHorizontal: spacing.xl, marginTop: spacing.sm },
+  prCard: { marginBottom: spacing.sm },
+  prHeaderRow: { flexDirection: 'row', alignItems: 'flex-start' },
+  prIcon: { marginRight: spacing.sm, marginTop: 2 },
   prTitle: { color: colors.fgDefault, fontSize: typography.sizeMd, fontWeight: '600', flex: 1 },
-  prMeta: { color: colors.fgMuted, fontSize: typography.sizeSm, marginTop: 4 },
+  prMeta: { color: colors.fgMuted, fontSize: typography.sizeSm, marginTop: 4, marginLeft: 26 },
 });

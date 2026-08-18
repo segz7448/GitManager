@@ -10,7 +10,15 @@ straight from the device to `api.github.com`.
 
 - React Native 0.86 (bare workflow, built via `expo prebuild`)
 - Expo native modules used as libraries only: `expo-secure-store`,
-  `expo-file-system`, `expo-document-picker`, `expo-sharing`, `expo-clipboard`
+  `expo-file-system`, `expo-document-picker`, `expo-sharing`, `expo-clipboard`,
+  `expo-image`, `expo-blur`, `expo-linear-gradient`, `expo-haptics`,
+  `expo-navigation-bar`, `expo-status-bar`
+- `@expo/vector-icons` (Ionicons) — iconography throughout
+- `src/components/ui/` — shared UI kit (`Button`, `Card`, `Badge`,
+  `IconButton`, `Screen`, `GlassPanel`, `Avatar`, `Input`, `EmptyState`,
+  `SectionLabel`) built on the above. See `PHASE12_UI_KIT_FCM_NOTES.md`.
+- `@react-native-firebase/app` + `@react-native-firebase/messaging` — FCM
+  push notifications (client-side registration; see notes below)
 - `@actualwave/react-native-codeditor` — WebView + CodeMirror syntax
   highlighting for the file editor
 - `jszip` — in-memory zip extraction on-device
@@ -53,6 +61,14 @@ default debug keystore, so the build still succeeds — it just won't be
 suitable for anything beyond installing directly on your own device (which
 is fine, since that's the intended use).
 
+### Required for FCM: `GOOGLE_SERVICES_JSON` secret
+
+Unlike the signing secrets above, this one is **required**, not optional —
+the build fails without it as soon as any FCM code is present. Add a repo
+secret named `GOOGLE_SERVICES_JSON` with the full text contents of your
+Firebase `google-services.json` file. See "Push notifications (FCM)" below
+for how to get that file.
+
 ## Authentication
 
 On first launch, paste a GitHub Personal Access Token (classic or
@@ -81,6 +97,31 @@ shows a file tree preview. Confirming the commit uploads every file in a
 single Git commit using the Git Data API (blobs → tree → commit → ref
 update) rather than one API call per file, so large uploads don't hit rate
 limits as quickly.
+
+## Push notifications (FCM)
+
+Local notifications (background-task polling → on-device alert) still work
+standalone with no setup. Real push — delivery while the app is fully
+killed — needs a one-time Firebase setup:
+
+1. Create a Firebase project, add an Android app with package name
+   `com.zenas.gitmanager`.
+2. Download `google-services.json`.
+3. **Building locally:** place it at the project root, then
+   `npm install && npx expo prebuild --platform android --clean`.
+4. **Building via GitHub Actions** (the included workflow): the file is
+   gitignored, so it's never in the repo the runner checks out. Instead,
+   add a repo secret named `GOOGLE_SERVICES_JSON` containing the *entire
+   contents* of the file (Settings → Secrets and variables → Actions →
+   New repository secret). The workflow writes it to disk before prebuild
+   runs. Skip this and the build fails fast with a clear error rather than
+   a confusing native build failure three steps later.
+
+Enable it from Settings → Push notifications. That registers the device
+and shows its FCM token with a copy button — paste it into the Firebase
+console's "Send test message" tool to verify delivery. Nothing sends
+pushes automatically yet; that's a deliberate gap until a server/webhook
+side is wired up. Full detail in `PHASE12_UI_KIT_FCM_NOTES.md`.
 
 ## Notes on the error parser
 
