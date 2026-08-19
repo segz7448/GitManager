@@ -203,9 +203,21 @@ function AuthenticatedApp() {
   }, []);
 
   React.useEffect(() => {
+    // expo-navigation-bar v57 dropped setBackgroundColorAsync and
+    // setButtonStyleAsync - Android now enforces edge-to-edge system bars
+    // (no more custom nav-bar background color), matching the
+    // "edgeToEdgeEnabled is no longer available" warning app.json's config
+    // now avoids. setStyle('light') is the one knob still exposed: it
+    // controls whether the nav bar's icons/buttons are light or dark to
+    // stay readable against whatever content is now drawn behind them.
+    // Note: setStyle is synchronous (no promise returned) - a .catch()
+    // here would itself throw "undefined is not a function".
     if (Platform.OS === 'android') {
-      NavigationBar.setBackgroundColorAsync(colors.bgDefault).catch(() => {});
-      NavigationBar.setButtonStyleAsync('light').catch(() => {});
+      try {
+        NavigationBar.setStyle('light');
+      } catch (e) {
+        // best-effort - some OEM ROMs restrict nav bar styling
+      }
     }
   }, []);
 
